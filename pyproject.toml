@@ -1,11 +1,35 @@
 [project]
-name = "repl-nix-workspace"
-version = "0.1.0"
-description = "Add your description here"
+name = "axiom-builder"
+version = "2.0.0"
+description = "Browser automation workflow engine using Playwright MCP"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.124.0",
-    "openai>=2.9.0",
-    "python-multipart>=0.0.20",
-    "uvicorn>=0.38.0",
+    # Web framework
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "python-multipart>=0.0.6",
+
+    # AI/LLM
+    "openai>=1.0.0",
+
+    # Data validation
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+
+    # Browser automation (for direct Playwright mode)
+    "playwright>=1.40.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.25.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["shared", "services"]

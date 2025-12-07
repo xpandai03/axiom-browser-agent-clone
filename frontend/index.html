@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Job Application Automation Engine</title>
+    <title>Axiom Builder - Browser Automation Engine</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Job Application Automation Engine</h1>
+            <h1>Axiom Builder</h1>
             <p class="subtitle">Transform natural language instructions into automated browser workflows</p>
         </header>
 
@@ -17,31 +17,54 @@
             <section class="input-section">
                 <div class="input-group">
                     <label for="instructions">Workflow Instructions</label>
-                    <textarea id="instructions" placeholder="Example: Go to https://jobs.example.com → click Apply Now button → fill in name field with my name → fill in email field with my email → upload resume → click Submit"></textarea>
+                    <textarea id="instructions" placeholder="Example: Go to https://example.com → wait 1 second → take a screenshot"></textarea>
+                </div>
+
+                <div class="button-row">
+                    <button id="test-btn" class="secondary-btn">Test Workflow</button>
+                    <button id="run-btn" class="primary-btn">Run Workflow</button>
+                </div>
+
+                <div class="input-group user-data-group">
+                    <label>User Data (for placeholders like {{user.name}})</label>
+                    <div class="user-data-fields">
+                        <input type="text" id="user-name" placeholder="Name" class="user-field">
+                        <input type="email" id="user-email" placeholder="Email" class="user-field">
+                        <input type="tel" id="user-phone" placeholder="Phone" class="user-field">
+                    </div>
                 </div>
 
                 <div class="input-group">
-                    <label for="job-description">Job Description (for resume tailoring)</label>
+                    <label for="job-description">Job Description (optional - for resume tailoring)</label>
                     <textarea id="job-description" placeholder="Paste the job description here to generate a tailored resume..."></textarea>
                 </div>
 
                 <div class="input-group">
-                    <label for="resume">Upload Resume (text file)</label>
+                    <label for="resume">Upload Resume (optional)</label>
                     <input type="file" id="resume" accept=".txt,.md,.doc,.docx,.pdf">
                 </div>
-
-                <button id="run-btn" class="primary-btn">Run Workflow</button>
             </section>
 
             <section class="output-section" id="output-section" style="display: none;">
                 <div class="output-panel">
-                    <h2>Generated Workflow Steps</h2>
+                    <h2>Parsed Workflow Steps</h2>
                     <div id="workflow-steps" class="code-block"></div>
                 </div>
 
                 <div class="output-panel">
                     <h2>Execution Logs</h2>
+                    <div id="execution-status" class="execution-status"></div>
                     <div id="execution-logs" class="log-block"></div>
+                </div>
+
+                <div class="output-panel screenshot-panel" id="screenshot-panel" style="display: none;">
+                    <h2>Step Screenshots</h2>
+                    <div id="screenshot-gallery" class="screenshot-gallery"></div>
+                    <div id="screenshot-viewer" class="screenshot-viewer" style="display: none;">
+                        <button id="close-viewer" class="close-btn">&times;</button>
+                        <img id="viewer-image" src="" alt="Screenshot">
+                        <div id="viewer-caption" class="viewer-caption"></div>
+                    </div>
                 </div>
 
                 <div class="output-panel" id="resume-panel" style="display: none;">
@@ -52,7 +75,7 @@
 
             <div id="loading" class="loading" style="display: none;">
                 <div class="spinner"></div>
-                <p>Processing workflow...</p>
+                <p id="loading-text">Processing workflow...</p>
             </div>
 
             <div id="error" class="error" style="display: none;"></div>

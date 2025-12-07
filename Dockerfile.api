@@ -1,0 +1,38 @@
+# API Service Dockerfile with Playwright
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+
+WORKDIR /app
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir \
+    fastapi>=0.104.0 \
+    uvicorn>=0.24.0 \
+    openai>=1.0.0 \
+    python-multipart>=0.0.6 \
+    pydantic>=2.0.0 \
+    pydantic-settings>=2.0.0 \
+    playwright>=1.40.0
+
+# Install Playwright browsers
+RUN playwright install chromium
+
+# Copy application code
+COPY shared/ ./shared/
+COPY services/api/ ./services/api/
+COPY frontend/ ./frontend/
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Default to headless mode
+ENV API_BROWSER_HEADLESS=true
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the API
+CMD ["python3", "-m", "uvicorn", "services.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

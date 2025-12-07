@@ -1,0 +1,278 @@
+"""
+MCP Runtime for Playwright browser automation.
+
+This module provides the actual browser automation using Playwright,
+designed to work with Cursor/Claude's native MCP integration.
+
+When running in Cursor with MCP configured:
+- Cursor manages the Playwright MCP server lifecycle
+- This runtime executes browser commands via Playwright
+- Screenshots are captured and returned as base64
+
+The runtime can operate in two modes:
+1. Native MCP mode: Tools called through Cursor's MCP protocol
+2. Direct Playwright mode: Fallback for standalone execution
+"""
+
+import asyncio
+import base64
+import logging
+import os
+from typing import Any, Dict, Optional
+from contextlib import asynccontextmanager
+
+logger = logging.getLogger(__name__)
+
+# Playwright imports - optional for environments without it
+try:
+    from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    logger.warning("Playwright not available - using simulation mode")
+
+
+class PlaywrightRuntime:
+    """
+    Playwright runtime for browser automation.
+
+    This class manages a Playwright browser instance and provides
+    methods that map to MCP tool calls.
+    """
+
+    def __init__(self):
+        self._playwright = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
+        self._headless = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
+
+    async def ensure_browser(self) -> Page:
+        """Ensure browser is running and return the page."""
+        if self._page is None:
+            await self._start_browser()
+        return self._page
+
+    async def _start_browser(self) -> None:
+        """Start the Playwright browser."""
+        if not PLAYWRIGHT_AVAILABLE:
+            raise RuntimeError("Playwright is not installed")
+
+        logger.info(f"Starting Playwright browser (headless={self._headless})")
+
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(headless=self._headless)
+        self._context = await self._browser.new_context(
+            viewport={"width": 1280, "height": 720}
+        )
+        self._page = await self._context.new_page()
+        self._page.set_default_timeout(30000)
+
+        logger.info("Browser started successfully")
+
+    async def close(self) -> None:
+        """Close the browser and cleanup."""
+        if self._page:
+            await self._page.close()
+            self._page = None
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+
+        logger.info("Browser closed")
+
+    async def navigate(self, url: str) -> Dict[str, Any]:
+        """Navigate to a URL."""
+        page = await self.ensure_browser()
+        response = await page.goto(url, wait_until="domcontentloaded")
+
+        return {
+            "success": True,
+            "content": f"Navigated to {url}",
+            "status": response.status if response else None,
+        }
+
+    async def click(self, selector: str) -> Dict[str, Any]:
+        """Click an element."""
+        page = await self.ensure_browser()
+        await page.wait_for_selector(selector, state="visible", timeout=10000)
+        await page.click(selector)
+
+        return {
+            "success": True,
+            "content": f"Clicked {selector}",
+        }
+
+    async def fill(self, selector: str, value: str) -> Dict[str, Any]:
+        """Fill text into an input field."""
+        page = await self.ensure_browser()
+        await page.wait_for_selector(selector, state="visible", timeout=10000)
+        await page.fill(selector, value)
+
+        return {
+            "success": True,
+            "content": f"Filled {selector} with text",
+        }
+
+    async def type_text(self, selector: str, text: str) -> Dict[str, Any]:
+        """Type text keystroke by keystroke."""
+        page = await self.ensure_browser()
+        await page.wait_for_selector(selector, state="visible", timeout=10000)
+        await page.type(selector, text)
+
+        return {
+            "success": True,
+            "content": f"Typed into {selector}",
+        }
+
+    async def screenshot(self) -> Dict[str, Any]:
+        """Take a screenshot and return as base64."""
+        page = await self.ensure_browser()
+        screenshot_bytes = await page.screenshot(type="jpeg", quality=80)
+        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+        return {
+            "success": True,
+            "content": "Screenshot captured",
+            "screenshot_base64": screenshot_base64,
+        }
+
+    async def wait_for(self, selector: str = None, timeout: int = 30000) -> Dict[str, Any]:
+        """Wait for an element or duration."""
+        page = await self.ensure_browser()
+
+        if selector:
+            await page.wait_for_selector(selector, timeout=timeout)
+            return {"success": True, "content": f"Element {selector} found"}
+        else:
+            await asyncio.sleep(timeout / 1000.0)
+            return {"success": True, "content": f"Waited {timeout}ms"}
+
+    async def scroll(self, direction: str = "down", amount: int = None) -> Dict[str, Any]:
+        """Scroll the page."""
+        page = await self.ensure_browser()
+
+        if direction == "down":
+            scroll_amount = amount or 500
+            await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+        elif direction == "up":
+            scroll_amount = amount or 500
+            await page.evaluate(f"window.scrollBy(0, -{scroll_amount})")
+
+        return {
+            "success": True,
+            "content": f"Scrolled {direction}",
+        }
+
+    async def file_upload(self, selector: str, paths: list) -> Dict[str, Any]:
+        """Upload files to a file input."""
+        page = await self.ensure_browser()
+        await page.set_input_files(selector, paths)
+
+        return {
+            "success": True,
+            "content": f"Uploaded {len(paths)} file(s)",
+        }
+
+    async def get_content(self, selector: str = None) -> Dict[str, Any]:
+        """Get page or element content."""
+        page = await self.ensure_browser()
+
+        if selector:
+            element = await page.query_selector(selector)
+            if element:
+                content = await element.text_content()
+                return {"success": True, "content": content}
+            return {"success": False, "error": f"Element {selector} not found"}
+
+        content = await page.content()
+        return {"success": True, "content": content[:1000] + "..." if len(content) > 1000 else content}
+
+
+# Global runtime instance
+_runtime: Optional[PlaywrightRuntime] = None
+
+
+async def get_runtime() -> PlaywrightRuntime:
+    """Get or create the Playwright runtime."""
+    global _runtime
+    if _runtime is None:
+        _runtime = PlaywrightRuntime()
+    return _runtime
+
+
+async def shutdown_runtime() -> None:
+    """Shutdown the Playwright runtime."""
+    global _runtime
+    if _runtime:
+        await _runtime.close()
+        _runtime = None
+
+
+async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToolResult":
+    """
+    Execute an MCP tool using the Playwright runtime.
+
+    This function maps MCP tool names to Playwright runtime methods.
+    """
+    from .mcp_client import MCPToolResult
+
+    runtime = await get_runtime()
+
+    try:
+        # Map tool names to runtime methods
+        tool_mapping = {
+            "browser_navigate": lambda: runtime.navigate(arguments.get("url", "")),
+            "browser_click": lambda: runtime.click(arguments.get("selector", "")),
+            "browser_fill": lambda: runtime.fill(
+                arguments.get("selector", ""),
+                arguments.get("value", "")
+            ),
+            "browser_type": lambda: runtime.type_text(
+                arguments.get("selector", ""),
+                arguments.get("text", "")
+            ),
+            "browser_screenshot": lambda: runtime.screenshot(),
+            "browser_wait_for": lambda: runtime.wait_for(
+                arguments.get("selector"),
+                arguments.get("timeout", 30000)
+            ),
+            "browser_scroll": lambda: runtime.scroll(
+                arguments.get("direction", "down"),
+                arguments.get("amount")
+            ),
+            "browser_file_upload": lambda: runtime.file_upload(
+                arguments.get("selector", ""),
+                arguments.get("paths", [])
+            ),
+            "browser_get_content": lambda: runtime.get_content(arguments.get("selector")),
+            "browser_close": lambda: runtime.close(),
+        }
+
+        if tool_name not in tool_mapping:
+            return MCPToolResult(
+                success=False,
+                error=f"Unknown tool: {tool_name}"
+            )
+
+        result = await tool_mapping[tool_name]()
+
+        return MCPToolResult(
+            success=result.get("success", True),
+            content=result.get("content"),
+            error=result.get("error"),
+            screenshot_base64=result.get("screenshot_base64"),
+        )
+
+    except Exception as e:
+        logger.error(f"Tool execution failed: {tool_name} - {e}")
+        return MCPToolResult(
+            success=False,
+            error=str(e)
+        )

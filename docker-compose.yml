@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # API Service with Playwright
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      - API_DEBUG=false
+      - API_BROWSER_HEADLESS=true
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # For Replit AI Integrations (optional)
+      - AI_INTEGRATIONS_OPENAI_API_KEY=${AI_INTEGRATIONS_OPENAI_API_KEY}
+      - AI_INTEGRATIONS_OPENAI_BASE_URL=${AI_INTEGRATIONS_OPENAI_BASE_URL}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Resource limits for browser automation
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
