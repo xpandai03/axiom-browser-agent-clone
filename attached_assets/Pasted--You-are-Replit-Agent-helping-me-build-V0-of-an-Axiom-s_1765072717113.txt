@@ -1,0 +1,291 @@
+
+You are Replit Agent helping me build **V0 of an Axiom-style browser automation orchestrator**, built specifically to demo a "job application automation engine."
+
+This is a **2-day MVP**, built inside a single Replit project.
+
+Use Plan Mode **ONLY** for now --- do **not** write or modify any code yet.
+
+* * * * *
+
+**🎯 **
+-------
+
+**V0 GOALS (VERY IMPORTANT)**
+-----------------------------
+
+This V0 must let a user:
+
+1.  **Enter natural-language workflow instructions**
+
+    Example:
+
+    "Go to this URL → click Apply → fill name/email → upload resume → submit"
+
+2.  **Convert instructions → JSON step list**
+
+    Using OpenAI to produce structured steps like:
+
+```
+[
+  {"action": "goto", "url": "..."},
+  {"action": "click", "selector": "#apply"},
+  {"action": "type", "selector": "#name", "value": "{{user.name}}"},
+  {"action": "upload", "selector": "#resume", "file": "resume.pdf"},
+  {"action": "click", "selector": "button.submit"}
+]
+```
+
+1.
+
+2.  **Simulate executing those steps**
+
+    → NO real Playwright or browser automation in V0.
+
+    → Instead, simulate each step and return logs like:
+
+```
+Executing: goto → success
+Executing: click #apply → success
+Executing: upload resume.pdf → success
+```
+
+1.
+
+2.  **Generate a tailored resume (REAL OpenAI call)**
+
+    -   User uploads a resume + job description
+
+    -   System generates a tailored resume summary + improved bullets
+
+    -   Display result in UI
+
+3.  **Display output as logs + tables in the UI**
+
+4.  **Everything lives inside one Replit project**
+
+    -   No database
+
+    -   No authentication
+
+    -   No payments
+
+    -   No multi-user system
+
+    -   Only 1 session at a time
+
+    -   Browser actions = simulation only
+
+* * * * *
+
+**📌 **
+-------
+
+**TECH STACK REQUIREMENTS**
+---------------------------
+
+**Backend**
+
+-   Python
+
+-   FastAPI (preferred) or Flask if necessary
+
+-   One endpoint: POST /run-workflow
+
+    -   Receives: instructions, job_description, resume (optional)
+
+    -   Returns: generated JSON steps, simulated execution logs, tailored resume text
+
+**Frontend**
+
+-   Minimal HTML/JS page
+
+-   Text areas for:
+
+    -   Workflow instructions
+
+    -   Job description
+
+-   File input for resume
+
+-   "Run Workflow" button → calls backend
+
+-   UI sections to show:
+
+    -   JSON steps
+
+    -   Execution logs
+
+    -   Tailored resume output
+
+**Integrations**
+
+-   OpenAI API (real)
+
+-   Simulated browser executor (fake)
+
+* * * * *
+
+**❌ **
+------
+
+**OUT OF SCOPE FOR V0**
+-----------------------
+
+Do NOT include:
+
+-   Real Playwright browser automation
+
+-   Real scraping
+
+-   Real authentication
+
+-   Real Stripe payments
+
+-   Real multi-user logic
+
+-   Databases
+
+-   Background jobs
+
+-   Deployment outside Replit
+
+This is a **demo engine**, not production.
+
+* * * * *
+
+**🧠 **
+-------
+
+**CORE COMPONENTS YOU MUST DESIGN (IN PLAN MODE)**
+--------------------------------------------------
+
+### **1\. File/Folder Structure**
+
+Propose the entire structure, e.g.:
+
+```
+/backend
+  app.py
+  workflow_parser.py
+  simulated_executor.py
+  resume_generator.py
+/frontend
+  index.html
+  main.js
+```
+
+### **2\. JSON Workflow Schema**
+
+Define the exact structure for step objects + workflows.
+
+### **3\. Backend Architecture**
+
+Describe:
+
+-   How instructions will be parsed
+
+-   How OpenAI will be used
+
+-   How simulation will be done
+
+-   How results will be structured & returned
+
+### **4\. Frontend Architecture**
+
+Describe:
+
+-   HTML layout
+
+-   JS fetch request to /run-workflow
+
+-   How logs + JSON steps will be displayed
+
+### **5\. Build Steps (IMPORTANT)**
+
+Provide a numbered list of **5--7 steps** you will implement in Build Mode, such as:
+
+1.  Create backend FastAPI skeleton + healthcheck
+
+2.  Implement /run-workflow with dummy response
+
+3.  Implement instruction → JSON step parser (OpenAI)
+
+4.  Implement simulated executor
+
+5.  Implement tailored resume generator (OpenAI)
+
+6.  Build basic HTML/JS UI
+
+7.  Wire UI to backend + display logs/results
+
+Each step must be **small, atomic, and safe**.
+
+* * * * *
+
+**🚨 **
+-------
+
+**CRITICAL INSTRUCTIONS**
+-------------------------
+
+In this message:
+
+-   **DO NOT MODIFY CODE OR CREATE FILES YET.**
+
+-   **DO NOT switch to Build Mode.**
+
+-   Only produce:
+
+    -   Complete architecture plan
+
+    -   Detailed file tree
+
+    -   API shapes
+
+    -   Execution flow diagrams
+
+    -   Step-by-step build roadmap
+
+-   Ask me: **"Would you like me to proceed with Step 1 in Build Mode?"**
+
+    after presenting the plan.
+
+* * * * *
+
+**✔️ **
+-------
+
+**Your Goal**
+-------------
+
+Produce the clearest possible plan so that Build Mode can generate the entire MVP smoothly and cleanly.
+
+**PROMPT END**
+
+* * * * *
+
+**🎉 **
+=======
+
+**NEXT STEP**
+=============
+
+Paste the above into Replit → **Plan Mode**.
+
+Let the Agent produce:
+
+-   architecture
+
+-   file structure
+
+-   schema
+
+-   step list
+
+-   build order
+
+Then reply:
+
+**"Approved. Proceed to Build Mode with Step 1."**
+
+It will begin scaffolding everything perfectly.
