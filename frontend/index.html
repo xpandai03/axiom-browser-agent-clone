@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Application Automation Engine</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Job Application Automation Engine</h1>
+            <p class="subtitle">Transform natural language instructions into automated browser workflows</p>
+        </header>
+
+        <main>
+            <section class="input-section">
+                <div class="input-group">
+                    <label for="instructions">Workflow Instructions</label>
+                    <textarea id="instructions" placeholder="Example: Go to https://jobs.example.com → click Apply Now button → fill in name field with my name → fill in email field with my email → upload resume → click Submit"></textarea>
+                </div>
+
+                <div class="input-group">
+                    <label for="job-description">Job Description (for resume tailoring)</label>
+                    <textarea id="job-description" placeholder="Paste the job description here to generate a tailored resume..."></textarea>
+                </div>
+
+                <div class="input-group">
+                    <label for="resume">Upload Resume (text file)</label>
+                    <input type="file" id="resume" accept=".txt,.md,.doc,.docx,.pdf">
+                </div>
+
+                <button id="run-btn" class="primary-btn">Run Workflow</button>
+            </section>
+
+            <section class="output-section" id="output-section" style="display: none;">
+                <div class="output-panel">
+                    <h2>Generated Workflow Steps</h2>
+                    <div id="workflow-steps" class="code-block"></div>
+                </div>
+
+                <div class="output-panel">
+                    <h2>Execution Logs</h2>
+                    <div id="execution-logs" class="log-block"></div>
+                </div>
+
+                <div class="output-panel" id="resume-panel" style="display: none;">
+                    <h2>Tailored Resume</h2>
+                    <div id="tailored-resume" class="resume-block"></div>
+                </div>
+            </section>
+
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Processing workflow...</p>
+            </div>
+
+            <div id="error" class="error" style="display: none;"></div>
+        </main>
+    </div>
+
+    <script src="/static/main.js"></script>
+</body>
+</html>
