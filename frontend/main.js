@@ -2,6 +2,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // DOM Elements
     const runBtn = document.getElementById('run-btn');
     const testBtn = document.getElementById('test-btn');
+    const demoBtn = document.getElementById('demo-btn');
     const instructionsInput = document.getElementById('instructions');
     const jobDescInput = document.getElementById('job-description');
     const resumeInput = document.getElementById('resume');
@@ -24,20 +25,35 @@ document.addEventListener('DOMContentLoaded', function() {
     const loadingText = document.getElementById('loading-text');
     const errorDiv = document.getElementById('error');
 
-    // Test workflow instructions
+    // Quick test workflow (simple)
     const TEST_WORKFLOW = `Go to https://example.com
 Wait 2 seconds
+Take a screenshot`;
+
+    // Demo workflow (more comprehensive - Stripe jobs page)
+    const DEMO_WORKFLOW = `Go to https://boards.greenhouse.io/stripe
+Wait 1 second
+Scroll down
 Take a screenshot`;
 
     // Event Listeners
     runBtn.addEventListener('click', runWorkflow);
     testBtn.addEventListener('click', runTestWorkflow);
+    demoBtn.addEventListener('click', loadDemoWorkflow);
     closeViewerBtn.addEventListener('click', closeScreenshotViewer);
 
     // Close viewer on escape key
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeScreenshotViewer();
     });
+
+    // Load demo workflow into textarea (does NOT auto-run)
+    function loadDemoWorkflow() {
+        instructionsInput.value = DEMO_WORKFLOW;
+        instructionsInput.focus();
+        // Scroll to the textarea
+        instructionsInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 
     function runTestWorkflow() {
         instructionsInput.value = TEST_WORKFLOW;
@@ -108,14 +124,14 @@ Take a screenshot`;
         const success = data.success !== false;
         const totalDuration = data.total_duration_ms || 0;
         executionStatusDiv.innerHTML = `
-            <div class="status-badge ${success ? 'success' : 'failed'}">
+            <div class="status-badge-large ${success ? 'success' : 'failed'}">
                 ${success ? 'SUCCESS' : 'FAILED'}
             </div>
-            <span class="status-info">
-                Workflow ID: ${data.workflow_id || 'N/A'} |
-                Duration: ${totalDuration}ms |
-                Steps: ${(data.steps || []).length}
-            </span>
+            <div class="status-info">
+                <span class="status-detail">Workflow ID: <strong>${data.workflow_id || 'N/A'}</strong></span>
+                <span class="status-detail">Duration: <strong>${totalDuration}ms</strong></span>
+                <span class="status-detail">Steps: <strong>${(data.steps || []).length}</strong></span>
+            </div>
         `;
 
         // Display execution logs
@@ -146,9 +162,9 @@ Take a screenshot`;
 
                 logEntry.innerHTML = `
                     <div class="log-header">
-                        <span class="log-step">Step ${stepNum}</span>
+                        <span class="log-step-badge">Step ${stepNum}</span>
                         <span class="log-action">${escapeHtml(action)}</span>
-                        <span class="log-status ${status}">${status.toUpperCase()}</span>
+                        <span class="log-status-pill ${status}">${status.toUpperCase()}</span>
                         <span class="log-duration">${durationMs}ms</span>
                     </div>
                     ${detailsHtml ? `<div class="log-details">${detailsHtml}</div>` : ''}
@@ -186,21 +202,37 @@ Take a screenshot`;
                 hasScreenshots = true;
 
                 const thumb = document.createElement('div');
-                thumb.className = 'screenshot-thumb';
+                thumb.className = 'screenshot-card';
 
-                // Create image with proper data URL
-                const imgSrc = screenshot.startsWith('data:')
-                    ? screenshot
-                    : `data:image/jpeg;base64,${screenshot}`;
+                // Create image with proper data URL - ensure correct format
+                let imgSrc = screenshot;
+                if (!screenshot.startsWith('data:')) {
+                    // Check if it looks like PNG or JPEG based on base64 header
+                    if (screenshot.startsWith('/9j/')) {
+                        imgSrc = `data:image/jpeg;base64,${screenshot}`;
+                    } else if (screenshot.startsWith('iVBOR')) {
+                        imgSrc = `data:image/png;base64,${screenshot}`;
+                    } else {
+                        imgSrc = `data:image/png;base64,${screenshot}`;
+                    }
+                }
+
+                const stepNum = step.step_number !== undefined ? step.step_number : index;
+                const action = step.action || 'unknown';
+                const status = step.status || 'unknown';
 
                 thumb.innerHTML = `
-                    <img src="${imgSrc}" alt="Step ${index} screenshot" loading="lazy">
-                    <span class="thumb-label">Step ${step.step_number !== undefined ? step.step_number : index}: ${step.action || 'unknown'}</span>
-                    <span class="thumb-status ${step.status || ''}">${(step.status || '').toUpperCase()}</span>
+                    <div class="screenshot-image-wrapper">
+                        <img src="${imgSrc}" alt="Step ${stepNum} screenshot" loading="lazy">
+                    </div>
+                    <div class="screenshot-caption">
+                        <span class="screenshot-step-label">Step ${stepNum}: ${escapeHtml(action)}</span>
+                        <span class="screenshot-status-badge ${status}">${status.toUpperCase()}</span>
+                    </div>
                 `;
 
                 thumb.addEventListener('click', () => {
-                    openScreenshotViewer(imgSrc, `Step ${step.step_number !== undefined ? step.step_number : index}: ${step.action || 'unknown'}`);
+                    openScreenshotViewer(imgSrc, `Step ${stepNum}: ${action}`);
                 });
 
                 screenshotGallery.appendChild(thumb);
@@ -211,10 +243,6 @@ Take a screenshot`;
             screenshotPanel.style.display = 'block';
         } else {
             screenshotPanel.style.display = 'none';
-            // Show message if no screenshots
-            const noScreenshots = document.createElement('div');
-            noScreenshots.className = 'no-screenshots';
-            noScreenshots.textContent = 'No screenshots captured';
         }
     }
 
@@ -252,12 +280,14 @@ Take a screenshot`;
         loadingDiv.style.display = 'block';
         runBtn.disabled = true;
         testBtn.disabled = true;
+        demoBtn.disabled = true;
     }
 
     function hideLoading() {
         loadingDiv.style.display = 'none';
         runBtn.disabled = false;
         testBtn.disabled = false;
+        demoBtn.disabled = false;
     }
 
     function showError(message) {
