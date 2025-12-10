@@ -21,6 +21,7 @@ class WorkflowStep(BaseModel):
     # Extract action fields
     attribute: Optional[str] = Field(None, description="Attribute name to extract (for extract action)")
     extract_mode: ExtractMode = Field("text", description="Extract mode: 'text' or 'attribute'")
+    label: Optional[str] = Field(None, description="Label for extracted data (used in logs and data aggregation)")
     # Fill form action fields
     fields: Optional[Dict[str, str]] = Field(None, description="Field name to value mapping for fill_form action")
     auto_detect: bool = Field(False, description="Auto-detect selectors for clicks and form fields")
@@ -57,6 +58,7 @@ class WorkflowStep(BaseModel):
             duration=self.duration,
             attribute=replace_placeholders(self.attribute),
             extract_mode=self.extract_mode,
+            label=self.label,
             fields=interpolated_fields,
             auto_detect=self.auto_detect,
             # Enhanced scroll fields

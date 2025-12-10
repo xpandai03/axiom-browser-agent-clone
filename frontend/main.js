@@ -76,39 +76,29 @@ Take a screenshot`,
         },
         scrape_greenhouse: {
             workflow_json: [
-                {
-                    "action": "goto",
-                    "url": "https://boards.greenhouse.io/anthropic/jobs/4020056008"
-                },
-                {
-                    "action": "wait",
-                    "duration": 1500
-                },
-                {
-                    "action": "click_first_job"
-                },
-                {
-                    "action": "wait",
-                    "duration": 1000
-                },
+                { "action": "goto", "url": "https://boards.greenhouse.io/anthropic" },
+                { "action": "wait", "duration": 1500 },
+                { "action": "click_first_job" },
+                { "action": "wait", "duration": 1500 },
                 {
                     "action": "extract",
                     "selector": "h1",
-                    "extract_mode": "text"
+                    "extract_mode": "text",
+                    "label": "job_title"
                 },
                 {
                     "action": "extract",
-                    "selector": ".location",
-                    "extract_mode": "text"
+                    "selector": "[class*='location'], .app-title + p, h1 + div",
+                    "extract_mode": "text",
+                    "label": "job_location"
                 },
                 {
                     "action": "extract",
-                    "selector": "#content",
-                    "extract_mode": "text"
+                    "selector": "#main, main, article, .job-description",
+                    "extract_mode": "text",
+                    "label": "job_description"
                 },
-                {
-                    "action": "screenshot"
-                }
+                { "action": "screenshot" }
             ],
             description: "Extract title, location & job description (auto-handles index pages)",
             prefillUserData: false

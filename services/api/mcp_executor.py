@@ -109,10 +109,14 @@ class MCPExecutor:
             # Capture extracted data if present
             if action_result.extracted_data is not None:
                 extracted_data = action_result.extracted_data
+                label = getattr(step, 'label', None) or step.selector or 'data'
                 if isinstance(extracted_data, list):
-                    logs.append(f"Extracted {len(extracted_data)} items")
+                    logs.append(f"Extracted [{label}]: {len(extracted_data)} items")
                 else:
-                    logs.append(f"Extracted data: {str(extracted_data)[:100]}...")
+                    preview = str(extracted_data)[:100]
+                    if len(str(extracted_data)) > 100:
+                        preview += "..."
+                    logs.append(f"Extracted [{label}]: {preview}")
 
             # Capture fields_filled data if present (from fill_form action)
             if hasattr(action_result, 'fields_filled') and action_result.fields_filled:
