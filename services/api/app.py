@@ -12,6 +12,7 @@ load_dotenv()
 
 from .config import get_config, log_openai_key_status
 from .routes import workflow_router, resume_router, health_router
+from .routes.element_picker import router as element_picker_router
 from .mcp_client import shutdown_mcp_client
 from .mcp_runtime import shutdown_runtime
 
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(workflow_router, prefix="/api")
     app.include_router(resume_router, prefix="/api")
+    app.include_router(element_picker_router, prefix="/api")
 
     # Mount frontend static files
     frontend_path = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")

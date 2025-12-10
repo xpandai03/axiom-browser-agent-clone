@@ -238,6 +238,100 @@ class PlaywrightRuntime:
         content = await page.content()
         return {"success": True, "content": content[:1000] + "..." if len(content) > 1000 else content}
 
+    async def get_elements_with_boxes(self) -> Dict[str, Any]:
+        """Extract clickable elements with bounding boxes for visual picker."""
+        page = await self.ensure_browser()
+
+        # JavaScript to extract clickable elements
+        elements = await page.evaluate("""
+            () => {
+                const results = [];
+                const seen = new Set();
+
+                // Selectors for clickable/interactive elements
+                const selectors = [
+                    'a[href]', 'button', 'input', 'select', 'textarea',
+                    '[onclick]', '[role="button"]', '[role="link"]',
+                    'label', '.btn', '[type="submit"]'
+                ];
+
+                // Helper to generate a unique CSS selector
+                function getSelector(el) {
+                    if (el.id) return '#' + CSS.escape(el.id);
+                    if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+
+                    // Use data-testid if available
+                    if (el.dataset && el.dataset.testid) return '[data-testid="' + el.dataset.testid + '"]';
+
+                    // Use unique class if available
+                    const classes = Array.from(el.classList || []).filter(c => {
+                        try {
+                            return document.querySelectorAll('.' + CSS.escape(c)).length === 1;
+                        } catch { return false; }
+                    });
+                    if (classes.length) return '.' + CSS.escape(classes[0]);
+
+                    // Fallback: tag + nth-of-type
+                    const parent = el.parentElement;
+                    if (!parent) return el.tagName.toLowerCase();
+                    const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+                    const index = siblings.indexOf(el) + 1;
+                    return el.tagName.toLowerCase() + ':nth-of-type(' + index + ')';
+                }
+
+                for (const selector of selectors) {
+                    try {
+                        document.querySelectorAll(selector).forEach(el => {
+                            // Skip hidden elements
+                            if (el.offsetParent === null && el.tagName !== 'BODY') return;
+
+                            const rect = el.getBoundingClientRect();
+                            // Skip elements with no size or outside viewport
+                            if (rect.width < 5 || rect.height < 5) return;
+                            if (rect.bottom < 0 || rect.top > window.innerHeight) return;
+                            if (rect.right < 0 || rect.left > window.innerWidth) return;
+
+                            // Dedupe by position
+                            const key = Math.round(rect.x) + ',' + Math.round(rect.y);
+                            if (seen.has(key)) return;
+                            seen.add(key);
+
+                            results.push({
+                                selector: getSelector(el),
+                                tag: el.tagName.toLowerCase(),
+                                text: (el.textContent || '').trim().substring(0, 50),
+                                placeholder: el.placeholder || null,
+                                bbox: {
+                                    x: Math.round(rect.x),
+                                    y: Math.round(rect.y),
+                                    width: Math.round(rect.width),
+                                    height: Math.round(rect.height)
+                                }
+                            });
+                        });
+                    } catch (e) {
+                        // Skip selector errors
+                    }
+                }
+
+                return results;
+            }
+        """)
+
+        return {
+            "success": True,
+            "elements": elements,
+            "count": len(elements)
+        }
+
+    async def wait(self, duration_ms: int) -> Dict[str, Any]:
+        """Wait for a specified duration in milliseconds."""
+        await asyncio.sleep(duration_ms / 1000.0)
+        return {
+            "success": True,
+            "content": f"Waited {duration_ms}ms"
+        }
+
     async def extract(self, selector: str = None, extract_mode: str = "text", attribute: str = None) -> Dict[str, Any]:
         """Extract text or attribute from elements on the page."""
         page = await self.ensure_browser()

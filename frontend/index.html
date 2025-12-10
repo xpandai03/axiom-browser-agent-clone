@@ -318,6 +318,42 @@
         </div>
     </div>
 
+    <!-- Element Picker Modal -->
+    <div class="modal-overlay hidden" id="element-picker-modal">
+        <div class="modal-backdrop" onclick="closeElementPicker()"></div>
+        <div class="modal-content element-picker">
+            <div class="modal-header">
+                <h3>Select Element</h3>
+                <button class="modal-close" onclick="closeElementPicker()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+            </div>
+
+            <div class="picker-url-bar">
+                <input type="url" id="picker-url" placeholder="Enter URL to load..." class="picker-url-input">
+                <button class="btn-primary" id="picker-load-btn">Load</button>
+            </div>
+
+            <div class="picker-viewport" id="picker-viewport">
+                <div class="picker-loading hidden" id="picker-loading">
+                    <div class="loading-spinner"></div>
+                    <p>Loading page...</p>
+                </div>
+                <div class="picker-empty" id="picker-empty">
+                    <p>Enter a URL above to load a page</p>
+                </div>
+                <img id="picker-screenshot" class="picker-screenshot hidden" alt="Page screenshot">
+                <div id="picker-overlays" class="picker-overlays"></div>
+            </div>
+
+            <div class="picker-footer">
+                <span class="picker-hint">Click an element to select it</span>
+                <span class="picker-element-count" id="picker-element-count"></span>
+                <button class="btn-secondary" onclick="closeElementPicker()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Screenshot Viewer Modal -->
     <div id="screenshot-viewer" class="screenshot-viewer">
         <div class="viewer-backdrop" onclick="closeScreenshotViewer()"></div>

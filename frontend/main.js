@@ -1220,17 +1220,26 @@ Take a screenshot`,
             switch (field.type) {
                 case 'url':
                 case 'text':
+                    const isSelector = field.name === 'selector' || field.label.toLowerCase().includes('selector');
+                    const selectBtnHtml = isSelector ? `
+                        <button type="button" class="btn-select-element" data-index="${index}" data-field="${field.name}" title="Select from page">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
+                        </button>
+                    ` : '';
                     return `
                         <div class="step-field">
                             <label class="step-field-label">${field.label}${field.required ? ' *' : ''}</label>
-                            <input
-                                type="${field.type === 'url' ? 'url' : 'text'}"
-                                class="step-field-input ${error ? 'has-error' : ''}"
-                                data-field="${field.name}"
-                                data-index="${index}"
-                                value="${escapeHtml(value || '')}"
-                                placeholder="${field.placeholder || ''}"
-                            >
+                            <div class="${isSelector ? 'step-field-with-button' : ''}">
+                                <input
+                                    type="${field.type === 'url' ? 'url' : 'text'}"
+                                    class="step-field-input ${error ? 'has-error' : ''}"
+                                    data-field="${field.name}"
+                                    data-index="${index}"
+                                    value="${escapeHtml(value || '')}"
+                                    placeholder="${field.placeholder || ''}"
+                                >
+                                ${selectBtnHtml}
+                            </div>
                             ${error ? `<div class="step-field-error">${escapeHtml(error)}</div>` : ''}
                             ${field.hint && !error ? `<div class="step-field-hint">${escapeHtml(field.hint)}</div>` : ''}
                         </div>
@@ -1379,6 +1388,17 @@ Take a screenshot`,
                 const index = parseInt(select.dataset.index);
                 const field = select.dataset.field;
                 updateStep(index, field, select.value);
+            });
+        });
+
+        // Select Element buttons (for element picker)
+        document.querySelectorAll('.btn-select-element').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                const index = parseInt(btn.dataset.index);
+                const field = btn.dataset.field;
+                openElementPicker(index, field);
             });
         });
 
@@ -1703,4 +1723,173 @@ Take a screenshot`,
             builderTab.appendChild(badge);
         }
     }
+
+    // ============================================
+    // ELEMENT PICKER
+    // ============================================
+
+    let pickerTargetField = null;  // Which field to populate when element is selected
+    let pickerTargetIndex = null;  // Step index for the field
+
+    const pickerModal = document.getElementById('element-picker-modal');
+    const pickerUrlInput = document.getElementById('picker-url');
+    const pickerLoadBtn = document.getElementById('picker-load-btn');
+    const pickerViewport = document.getElementById('picker-viewport');
+    const pickerScreenshot = document.getElementById('picker-screenshot');
+    const pickerOverlays = document.getElementById('picker-overlays');
+    const pickerLoading = document.getElementById('picker-loading');
+    const pickerEmpty = document.getElementById('picker-empty');
+    const pickerElementCount = document.getElementById('picker-element-count');
+
+    window.openElementPicker = function(stepIndex, fieldName) {
+        pickerTargetIndex = stepIndex;
+        pickerTargetField = fieldName;
+
+        // Reset state
+        if (pickerScreenshot) pickerScreenshot.classList.add('hidden');
+        if (pickerOverlays) pickerOverlays.innerHTML = '';
+        if (pickerEmpty) pickerEmpty.classList.remove('hidden');
+        if (pickerLoading) pickerLoading.classList.add('hidden');
+        if (pickerElementCount) pickerElementCount.textContent = '';
+
+        // Pre-fill URL from goto step if available
+        const gotoStep = builderSteps.find(s => s.action === 'goto' && s.url);
+        if (gotoStep && pickerUrlInput) {
+            pickerUrlInput.value = gotoStep.url;
+        }
+
+        if (pickerModal) {
+            pickerModal.classList.remove('hidden');
+            if (pickerUrlInput) pickerUrlInput.focus();
+        }
+    };
+
+    window.closeElementPicker = function() {
+        if (pickerModal) pickerModal.classList.add('hidden');
+        pickerTargetField = null;
+        pickerTargetIndex = null;
+    };
+
+    async function loadPageForPicker() {
+        const url = pickerUrlInput ? pickerUrlInput.value.trim() : '';
+        if (!url) {
+            showError('Please enter a URL');
+            return;
+        }
+
+        // Show loading
+        if (pickerEmpty) pickerEmpty.classList.add('hidden');
+        if (pickerScreenshot) pickerScreenshot.classList.add('hidden');
+        if (pickerOverlays) pickerOverlays.innerHTML = '';
+        if (pickerLoading) pickerLoading.classList.remove('hidden');
+        if (pickerElementCount) pickerElementCount.textContent = 'Loading...';
+
+        try {
+            const response = await fetch('/api/element-picker/load', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Failed to load page');
+            }
+
+            const data = await response.json();
+
+            // Hide loading
+            if (pickerLoading) pickerLoading.classList.add('hidden');
+
+            // Display screenshot
+            if (pickerScreenshot) {
+                pickerScreenshot.src = 'data:image/jpeg;base64,' + data.screenshot_base64;
+                pickerScreenshot.classList.remove('hidden');
+
+                // Wait for image to load to get dimensions
+                pickerScreenshot.onload = () => {
+                    renderPickerOverlays(data.elements, data.viewport);
+                };
+            }
+
+            // Update element count
+            if (pickerElementCount) {
+                pickerElementCount.textContent = `${data.element_count} elements found`;
+            }
+
+        } catch (error) {
+            if (pickerLoading) pickerLoading.classList.add('hidden');
+            if (pickerEmpty) pickerEmpty.classList.remove('hidden');
+            if (pickerElementCount) pickerElementCount.textContent = '';
+            showError(error.message);
+        }
+    }
+
+    function renderPickerOverlays(elements, viewport) {
+        if (!pickerOverlays || !pickerScreenshot) return;
+
+        pickerOverlays.innerHTML = '';
+
+        // Get the actual displayed position of the screenshot
+        const imgRect = pickerScreenshot.getBoundingClientRect();
+        const viewportRect = pickerViewport.getBoundingClientRect();
+
+        // Calculate scale factor (screenshot may be displayed smaller than viewport)
+        const scaleX = imgRect.width / viewport.width;
+        const scaleY = imgRect.height / viewport.height;
+
+        // Position overlays container to match screenshot position within viewport
+        const offsetX = imgRect.left - viewportRect.left + pickerViewport.scrollLeft;
+        const offsetY = imgRect.top - viewportRect.top + pickerViewport.scrollTop;
+
+        pickerOverlays.style.width = imgRect.width + 'px';
+        pickerOverlays.style.height = imgRect.height + 'px';
+        pickerOverlays.style.left = offsetX + 'px';
+        pickerOverlays.style.top = offsetY + 'px';
+
+        elements.forEach(el => {
+            const box = document.createElement('div');
+            box.className = 'picker-overlay-box';
+            box.style.left = (el.bbox.x * scaleX) + 'px';
+            box.style.top = (el.bbox.y * scaleY) + 'px';
+            box.style.width = (el.bbox.width * scaleX) + 'px';
+            box.style.height = (el.bbox.height * scaleY) + 'px';
+            box.dataset.selector = el.selector;
+            box.title = el.text || el.tag;
+
+            box.addEventListener('click', () => {
+                selectPickerElement(el.selector);
+            });
+
+            pickerOverlays.appendChild(box);
+        });
+    }
+
+    function selectPickerElement(selector) {
+        if (pickerTargetIndex !== null && pickerTargetField) {
+            // Update the step with selected selector
+            updateStep(pickerTargetIndex, pickerTargetField, selector);
+        }
+        closeElementPicker();
+    }
+
+    // Event listeners for element picker
+    if (pickerLoadBtn) {
+        pickerLoadBtn.addEventListener('click', loadPageForPicker);
+    }
+
+    if (pickerUrlInput) {
+        pickerUrlInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                loadPageForPicker();
+            }
+        });
+    }
+
+    // Close picker on escape
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && pickerModal && !pickerModal.classList.contains('hidden')) {
+            closeElementPicker();
+        }
+    });
 });
