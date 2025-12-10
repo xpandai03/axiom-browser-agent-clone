@@ -7,20 +7,19 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install additional dependencies for Playwright MCP
-RUN pip install --no-cache-dir playwright mcp
-
 # Copy application code
 COPY . .
 
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-ENV HOST=0.0.0.0
+
+# Railway provides PORT env variable
+# Default to 8000 if not set
 ENV PORT=8000
 
-# Expose port
+# Expose port (Railway overrides this)
 EXPOSE 8000
 
-# Run the application
-CMD ["python", "-m", "uvicorn", "services.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use shell form to allow $PORT expansion
+CMD uvicorn services.api.app:app --host 0.0.0.0 --port $PORT
