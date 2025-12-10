@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 import re
 
 
-ActionType = Literal["goto", "click", "type", "upload", "wait", "scroll", "extract", "screenshot", "fill_form"]
+ActionType = Literal["goto", "click", "type", "upload", "wait", "scroll", "extract", "screenshot", "fill_form", "click_first_job"]
 ApplyMode = Literal["greenhouse_basic"]
 ExtractMode = Literal["text", "attribute"]
 ScrollMode = Literal["pixels", "to_element", "until_text"]

@@ -95,6 +95,26 @@ class BaseMCPClient(ABC):
         """Close the browser."""
         return await self.call_tool("browser_close", {})
 
+    async def get_current_url(self) -> MCPToolResult:
+        """Get the current page URL."""
+        return await self.call_tool("browser_get_current_url", {})
+
+    async def get_element_count(self, selector: str) -> MCPToolResult:
+        """Get the count of elements matching a selector."""
+        return await self.call_tool("browser_get_element_count", {"selector": selector})
+
+    async def click_first_job(self) -> MCPToolResult:
+        """Click the first job listing on a Greenhouse index page."""
+        return await self.call_tool("browser_click_first_job", {})
+
+    async def scroll_to_element(self, selector: str) -> MCPToolResult:
+        """Scroll to bring an element into view."""
+        return await self.call_tool("browser_scroll_to_element", {"selector": selector})
+
+    async def scroll_until_text(self, text: str, max_scrolls: int = 10) -> MCPToolResult:
+        """Scroll until specific text is found on the page."""
+        return await self.call_tool("browser_scroll_until_text", {"text": text, "max_scrolls": max_scrolls})
+
 
 class CursorMCPClient(BaseMCPClient):
     """

@@ -240,6 +240,10 @@ class MCPExecutor:
             # Fill multiple form fields
             return await self._execute_fill_form(client, step)
 
+        elif step.action == "click_first_job":
+            # Click first job listing on a Greenhouse index page
+            return await client.click_first_job()
+
         else:
             return MCPToolResult(
                 success=False,

@@ -85,6 +85,13 @@ Take a screenshot`,
                     "duration": 1500
                 },
                 {
+                    "action": "click_first_job"
+                },
+                {
+                    "action": "wait",
+                    "duration": 1000
+                },
+                {
                     "action": "extract",
                     "selector": "h1",
                     "extract_mode": "text"
@@ -103,7 +110,7 @@ Take a screenshot`,
                     "action": "screenshot"
                 }
             ],
-            description: "Extract title, location & job description",
+            description: "Extract title, location & job description (auto-handles index pages)",
             prefillUserData: false
         }
     };
@@ -664,7 +671,8 @@ Take a screenshot`,
         extract: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>',
         screenshot: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
         fill_form: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>',
-        upload: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>'
+        upload: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
+        click_first_job: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3H8"/><path d="M12 11v4"/><path d="M10 13h4"/></svg>'
     };
 
     // Step Schema - defines all supported actions and their fields
@@ -757,6 +765,13 @@ Take a screenshot`,
                 { name: 'selector', type: 'text', label: 'File input selector', required: true, placeholder: 'input[type="file"]', hint: 'CSS selector for the file input' },
                 { name: 'file', type: 'text', label: 'Filename', required: true, placeholder: 'resume.pdf', hint: 'Name of the file to upload' }
             ]
+        },
+        click_first_job: {
+            label: 'Click First Job',
+            icon: STEP_ICONS.click_first_job,
+            category: 'Navigate',
+            description: 'Auto-detect and click the first job listing on a Greenhouse index page',
+            fields: []
         }
     };
 
@@ -806,7 +821,7 @@ Take a screenshot`,
 
     // Category groupings
     const STEP_CATEGORIES = {
-        'Navigate': ['goto', 'scroll'],
+        'Navigate': ['goto', 'scroll', 'click_first_job'],
         'Interact': ['click', 'type', 'upload'],
         'Extract': ['extract'],
         'Forms': ['fill_form'],

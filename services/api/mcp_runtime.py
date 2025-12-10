@@ -427,6 +427,102 @@ class PlaywrightRuntime:
             "content": f"Waited {duration_ms}ms"
         }
 
+    async def get_current_url(self) -> Dict[str, Any]:
+        """Get the current page URL."""
+        page = await self.ensure_browser()
+        url = page.url
+        return {
+            "success": True,
+            "content": url,
+            "url": url
+        }
+
+    async def get_element_count(self, selector: str) -> Dict[str, Any]:
+        """Get the count of elements matching a selector."""
+        page = await self.ensure_browser()
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+            return {
+                "success": True,
+                "content": f"Found {count} elements matching {selector}",
+                "count": count
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to count elements: {str(e)}",
+                "count": 0
+            }
+
+    async def click_first_job(self) -> Dict[str, Any]:
+        """
+        Detect if on a Greenhouse index page and click the first job link.
+
+        This action is designed to handle the case where a job URL redirects
+        to an index page (e.g., job closed). It detects the index page and
+        clicks the first job listing.
+
+        Returns:
+            Dict with success status and info about what was clicked.
+        """
+        page = await self.ensure_browser()
+        current_url = page.url
+
+        # Check if we're already on a job detail page (URL contains /jobs/)
+        if "/jobs/" in current_url and not current_url.endswith("/jobs") and not current_url.endswith("/jobs/"):
+            return {
+                "success": True,
+                "content": f"Already on job detail page: {current_url}",
+                "skipped": True,
+                "url": current_url
+            }
+
+        # Try Greenhouse-specific job listing selectors
+        job_link_selectors = [
+            ".opening a",           # Greenhouse standard
+            "a.opening",            # Alternative structure
+            "a[href*='/jobs/']",    # Any link to a job
+            ".job-listing a",       # Common pattern
+            ".job-post a",          # Another common pattern
+        ]
+
+        for selector in job_link_selectors:
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() > 0 and await locator.is_visible(timeout=2000):
+                    # Get the href before clicking
+                    href = await locator.get_attribute("href")
+                    job_title = await locator.text_content()
+
+                    # Click the first job
+                    await locator.click()
+
+                    # Wait for navigation
+                    await page.wait_for_load_state("domcontentloaded")
+                    await asyncio.sleep(1)  # Extra wait for page to settle
+
+                    new_url = page.url
+
+                    return {
+                        "success": True,
+                        "content": f"Clicked first job: {job_title.strip() if job_title else href}",
+                        "selector_used": selector,
+                        "job_href": href,
+                        "job_title": job_title.strip() if job_title else None,
+                        "new_url": new_url,
+                        "skipped": False
+                    }
+            except Exception:
+                continue
+
+        # No job links found - might already be on detail page or no jobs available
+        return {
+            "success": False,
+            "error": f"No job listings found on page. Current URL: {current_url}",
+            "url": current_url
+        }
+
     async def extract(self, selector: str = None, extract_mode: str = "text", attribute: str = None) -> Dict[str, Any]:
         """Extract text or attribute from elements on the page."""
         page = await self.ensure_browser()
@@ -546,6 +642,18 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
                 arguments.get("attribute")
             ),
             "browser_close": lambda: runtime.close(),
+            "browser_get_current_url": lambda: runtime.get_current_url(),
+            "browser_get_element_count": lambda: runtime.get_element_count(
+                arguments.get("selector", "")
+            ),
+            "browser_click_first_job": lambda: runtime.click_first_job(),
+            "browser_scroll_to_element": lambda: runtime.scroll_to_element(
+                arguments.get("selector", "")
+            ),
+            "browser_scroll_until_text": lambda: runtime.scroll_until_text(
+                arguments.get("text", ""),
+                arguments.get("max_scrolls", 10)
+            ),
         }
 
         if tool_name not in tool_mapping:
