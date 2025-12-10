@@ -1763,6 +1763,10 @@ Take a screenshot`,
     const pickerLoading = document.getElementById('picker-loading');
     const pickerEmpty = document.getElementById('picker-empty');
     const pickerElementCount = document.getElementById('picker-element-count');
+    const pickerScrollControls = document.getElementById('picker-scroll-controls');
+    const pickerScrollUp = document.getElementById('picker-scroll-up');
+    const pickerScrollDown = document.getElementById('picker-scroll-down');
+    let currentPickerViewport = { width: 1280, height: 720 };
 
     window.openElementPicker = function(stepIndex, fieldName, mode = 'click') {
         pickerTargetIndex = stepIndex;
@@ -1775,6 +1779,7 @@ Take a screenshot`,
         if (pickerEmpty) pickerEmpty.classList.remove('hidden');
         if (pickerLoading) pickerLoading.classList.add('hidden');
         if (pickerElementCount) pickerElementCount.textContent = '';
+        if (pickerScrollControls) pickerScrollControls.classList.add('hidden');
 
         // Update UI based on mode
         if (pickerHint) {
@@ -1842,6 +1847,9 @@ Take a screenshot`,
 
             const data = await response.json();
 
+            // Store viewport for scroll operations
+            currentPickerViewport = data.viewport || { width: 1280, height: 720 };
+
             // Hide loading
             if (pickerLoading) pickerLoading.classList.add('hidden');
 
@@ -1852,13 +1860,18 @@ Take a screenshot`,
 
                 // Wait for image to load to get dimensions
                 pickerScreenshot.onload = () => {
-                    renderPickerOverlays(data.elements, data.viewport);
+                    renderPickerOverlays(data.elements, currentPickerViewport);
                 };
             }
 
             // Update element count
             if (pickerElementCount) {
                 pickerElementCount.textContent = `${data.element_count} elements found`;
+            }
+
+            // Show scroll controls
+            if (pickerScrollControls) {
+                pickerScrollControls.classList.remove('hidden');
             }
 
         } catch (error) {
@@ -1927,6 +1940,51 @@ Take a screenshot`,
         }
     }
 
+    // Scroll the picker browser page
+    async function scrollPickerPage(direction) {
+        // Disable buttons during scroll
+        if (pickerScrollUp) pickerScrollUp.disabled = true;
+        if (pickerScrollDown) pickerScrollDown.disabled = true;
+        if (pickerElementCount) pickerElementCount.textContent = 'Scrolling...';
+
+        try {
+            const response = await fetch('/api/element-picker/scroll', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ direction, amount: 500 })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Scroll failed');
+            }
+
+            const data = await response.json();
+
+            // Update screenshot
+            if (pickerScreenshot) {
+                pickerScreenshot.src = 'data:image/jpeg;base64,' + data.screenshot_base64;
+                // Wait for image to load then update overlays
+                pickerScreenshot.onload = () => {
+                    renderPickerOverlays(data.elements, currentPickerViewport);
+                };
+            }
+
+            // Update element count
+            if (pickerElementCount) {
+                pickerElementCount.textContent = `${data.element_count} elements found`;
+            }
+
+        } catch (error) {
+            showError(error.message);
+            if (pickerElementCount) pickerElementCount.textContent = 'Scroll failed';
+        } finally {
+            // Re-enable buttons
+            if (pickerScrollUp) pickerScrollUp.disabled = false;
+            if (pickerScrollDown) pickerScrollDown.disabled = false;
+        }
+    }
+
     // Event listeners for element picker
     if (pickerLoadBtn) {
         pickerLoadBtn.addEventListener('click', loadPageForPicker);
@@ -1938,6 +1996,15 @@ Take a screenshot`,
                 loadPageForPicker();
             }
         });
+    }
+
+    // Scroll button event listeners
+    if (pickerScrollUp) {
+        pickerScrollUp.addEventListener('click', () => scrollPickerPage('up'));
+    }
+
+    if (pickerScrollDown) {
+        pickerScrollDown.addEventListener('click', () => scrollPickerPage('down'));
     }
 
     // Close picker on escape

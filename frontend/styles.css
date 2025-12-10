@@ -1961,6 +1961,51 @@ body {
     border-radius: var(--radius-sm);
 }
 
+/* Picker Scroll Controls */
+.picker-scroll-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 0.75rem 1.25rem;
+    background: var(--neutral-850);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.picker-scroll-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 0.875rem;
+    background: var(--neutral-700);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--neutral-200);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.picker-scroll-btn:hover {
+    background: var(--accent-cyan);
+    color: var(--neutral-950);
+    border-color: var(--accent-cyan);
+}
+
+.picker-scroll-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.picker-scroll-btn svg {
+    flex-shrink: 0;
+}
+
+.picker-scroll-hint {
+    font-size: 0.75rem;
+    color: var(--neutral-500);
+}
+
 /* Select Element Button in Builder */
 .step-field-with-button {
     display: flex;

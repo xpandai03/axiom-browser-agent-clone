@@ -142,6 +142,60 @@ async def click_and_get_new_state(request: ClickAndUpdateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ScrollRequest(BaseModel):
+    direction: str = "down"  # "up" or "down"
+    amount: int = 500  # pixels
+
+
+@router.post("/scroll")
+async def scroll_picker_browser(request: ScrollRequest):
+    """
+    Scroll the picker browser and return new screenshot + elements.
+
+    Used to explore elements below/above the current viewport.
+    """
+    try:
+        runtime = await get_picker_runtime()
+
+        if runtime._page is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No page loaded. Call /load first."
+            )
+
+        # Scroll the page
+        scroll_result = await runtime.scroll(request.direction, request.amount)
+        if not scroll_result.get("success"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Scroll failed: {scroll_result.get('error', 'Unknown error')}"
+            )
+
+        # Wait briefly for any lazy-loaded content
+        await runtime.wait(500)
+
+        # Get new elements and screenshot
+        elements_result = await runtime.get_elements_with_boxes()
+        screenshot_result = await runtime.screenshot()
+
+        elements = elements_result.get("elements", [])
+
+        return {
+            "success": True,
+            "screenshot_base64": screenshot_result.get("screenshot_base64", ""),
+            "elements": elements,
+            "element_count": len(elements),
+            "scroll_direction": request.direction,
+            "scroll_amount": request.amount
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Scroll picker error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/close")
 async def close_picker_browser():
     """Close the picker browser instance."""
