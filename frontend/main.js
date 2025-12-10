@@ -102,6 +102,16 @@ Take a screenshot`,
             ],
             description: "Extract title, location & job description (auto-handles index pages)",
             prefillUserData: false
+        },
+        scrape_multi_jobs: {
+            workflow_json: [
+                { "action": "goto", "url": "https://boards.greenhouse.io/anthropic" },
+                { "action": "wait", "duration": 2000 },
+                { "action": "extract_job_links", "label": "job_links" },
+                { "action": "loop_jobs", "job_url_source": "job_links", "max_jobs": 5 }
+            ],
+            description: "Extract data from multiple jobs on a Greenhouse board (title, location, description + screenshots)",
+            prefillUserData: false
         }
     };
 
@@ -311,6 +321,90 @@ Take a screenshot`,
 
         addTimelineCard(`final-status ${statusClass}`, content);
     }
+
+    // ============================================
+    // Multi-Job Results Rendering
+    // ============================================
+
+    function renderJobsSection(jobs, csvOutput) {
+        const successCount = jobs.filter(j => j.success).length;
+        const failedCount = jobs.length - successCount;
+
+        let jobCardsHtml = jobs.map(job => {
+            const statusClass = job.success ? 'success' : 'failed';
+            const statusIcon = job.success ? '&#10003;' : '&#10007;';
+
+            return `
+                <div class="job-card ${statusClass}" data-job-index="${job.job_index}">
+                    <div class="job-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+                        <span class="job-index">#${job.job_index + 1}</span>
+                        <span class="job-title">${escapeHtml(job.title || 'Untitled Job')}</span>
+                        <span class="job-status ${statusClass}">${statusIcon}</span>
+                    </div>
+                    <div class="job-card-body">
+                        ${job.location ? `<div class="job-location"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>${escapeHtml(job.location)}</div>` : ''}
+                        <div class="job-url"><a href="${escapeHtml(job.url)}" target="_blank" rel="noopener">${escapeHtml(job.url)}</a></div>
+                        ${job.description ? `<div class="job-description-preview">${escapeHtml(job.description.substring(0, 200))}${job.description.length > 200 ? '...' : ''}</div>` : ''}
+                    </div>
+                    ${job.error ? `<div class="job-error">${escapeHtml(job.error)}</div>` : ''}
+                    ${job.screenshot_base64 ? `<div class="job-screenshot"><img src="data:image/jpeg;base64,${job.screenshot_base64}" alt="Screenshot of ${escapeHtml(job.title || 'job')}"></div>` : ''}
+                </div>
+            `;
+        }).join('');
+
+        const content = `
+            <div class="jobs-section-header">
+                <h4 class="jobs-section-title">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+                    Extracted Jobs
+                    <span class="jobs-count">${jobs.length}</span>
+                </h4>
+            </div>
+            <div class="jobs-stats">
+                <div class="jobs-stat">
+                    <span class="jobs-stat-value">${successCount}</span>
+                    <span class="jobs-stat-label">Success</span>
+                </div>
+                <div class="jobs-stat">
+                    <span class="jobs-stat-value">${failedCount}</span>
+                    <span class="jobs-stat-label">Failed</span>
+                </div>
+            </div>
+            <div class="jobs-list">
+                ${jobCardsHtml}
+            </div>
+            ${csvOutput ? `
+                <button class="btn-primary csv-download-btn" onclick="downloadCsv()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Download CSV
+                </button>
+            ` : ''}
+        `;
+
+        // Store CSV for download
+        window._lastCsvOutput = csvOutput;
+
+        addTimelineCard('jobs-section', content);
+    }
+
+    // CSV Download handler
+    window.downloadCsv = function() {
+        const csv = window._lastCsvOutput;
+        if (!csv) {
+            showError('No CSV data available');
+            return;
+        }
+
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `jobs_${Date.now()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
 
     // ============================================
     // Workflow Execution (Streaming with SSE)
@@ -662,7 +756,9 @@ Take a screenshot`,
         screenshot: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
         fill_form: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>',
         upload: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
-        click_first_job: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3H8"/><path d="M12 11v4"/><path d="M10 13h4"/></svg>'
+        click_first_job: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3H8"/><path d="M12 11v4"/><path d="M10 13h4"/></svg>',
+        extract_job_links: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+        loop_jobs: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>'
     };
 
     // Step Schema - defines all supported actions and their fields
@@ -762,6 +858,25 @@ Take a screenshot`,
             category: 'Navigate',
             description: 'Auto-detect and click the first job listing on a Greenhouse index page',
             fields: []
+        },
+        extract_job_links: {
+            label: 'Extract Job Links',
+            icon: STEP_ICONS.extract_job_links,
+            category: 'Scrape',
+            description: 'Extract all job posting URLs from a Greenhouse board',
+            fields: [
+                { name: 'label', type: 'text', label: 'Output Label', default: 'job_links', placeholder: 'job_links', hint: 'Label for extracted URLs (used by Loop Jobs)', required: true }
+            ]
+        },
+        loop_jobs: {
+            label: 'Loop Through Jobs',
+            icon: STEP_ICONS.loop_jobs,
+            category: 'Scrape',
+            description: 'Process each job URL and extract title, location, description + screenshot',
+            fields: [
+                { name: 'job_url_source', type: 'text', label: 'Job URLs Source', default: 'job_links', placeholder: 'job_links', hint: 'Label from Extract Job Links step', required: true },
+                { name: 'max_jobs', type: 'number', label: 'Max Jobs', default: 5, min: 1, max: 50, placeholder: '5', hint: 'Maximum number of jobs to process' }
+            ]
         }
     };
 
@@ -814,6 +929,7 @@ Take a screenshot`,
         'Navigate': ['goto', 'scroll', 'click_first_job'],
         'Interact': ['click', 'type', 'upload'],
         'Extract': ['extract'],
+        'Scrape': ['extract_job_links', 'loop_jobs'],
         'Forms': ['fill_form'],
         'Control': ['wait', 'screenshot']
     };
@@ -1735,6 +1851,11 @@ Take a screenshot`,
                 renderStepExecution(step, index);
                 renderScreenshot(step, index);
             });
+
+            // Render multi-job results if present
+            if (data.jobs && data.jobs.length > 0) {
+                renderJobsSection(data.jobs, data.csv_output);
+            }
 
             // Render final status
             renderFinalStatus(data);

@@ -208,6 +208,7 @@ async def execute_steps(
     Execute pre-parsed workflow steps directly.
 
     Useful when steps have already been parsed or modified.
+    Includes multi-job scraping results (jobs array and CSV output).
     """
     try:
         # Convert to WorkflowStep objects
@@ -219,13 +220,20 @@ async def execute_steps(
             user_data=user_data,
         )
 
-        return {
+        response = {
             "workflow_id": result.workflow_id,
             "success": result.success,
             "steps": [step.model_dump() for step in result.steps],
             "total_duration_ms": result.total_duration_ms,
             "error": result.error,
         }
+
+        # Include multi-job scraping results if present
+        if result.jobs:
+            response["jobs"] = [job.model_dump() for job in result.jobs]
+            response["csv_output"] = result.csv_output
+
+        return response
     except Exception as e:
         logger.error(f"Execute steps failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

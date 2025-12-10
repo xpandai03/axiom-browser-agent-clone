@@ -523,6 +523,53 @@ class PlaywrightRuntime:
             "url": current_url
         }
 
+    async def extract_job_links(self) -> Dict[str, Any]:
+        """Extract all job posting links from a Greenhouse board page."""
+        page = await self.ensure_browser()
+
+        logger.info("Extracting job links from Greenhouse board")
+
+        # Greenhouse-specific selectors for job links
+        job_selectors = [
+            ".opening a",           # Classic Greenhouse
+            "a.opening",            # Alternative
+            "a[href*='/jobs/']",    # URL-based
+            "[data-mapped='true'] a",  # Some newer boards
+            ".job-post a",          # Yet another variant
+            ".job-listing a",       # Common pattern
+        ]
+
+        job_urls = []
+        seen_urls = set()
+        base_url = "/".join(page.url.split("/")[:3])  # e.g., https://boards.greenhouse.io
+
+        for selector in job_selectors:
+            try:
+                elements = await page.query_selector_all(selector)
+                for el in elements:
+                    href = await el.get_attribute("href")
+                    if href and href not in seen_urls:
+                        # Normalize relative URLs
+                        if href.startswith("/"):
+                            href = base_url + href
+
+                        # Filter to job URLs only
+                        if "/jobs/" in href or "/job/" in href:
+                            seen_urls.add(href)
+                            job_urls.append(href)
+
+            except Exception as e:
+                logger.debug(f"Selector {selector} failed: {e}")
+                continue
+
+        logger.info(f"Found {len(job_urls)} job links")
+
+        return {
+            "success": True,
+            "content": f"Extracted {len(job_urls)} job links",
+            "extracted_data": job_urls,
+        }
+
     async def extract(self, selector: str = None, extract_mode: str = "text", attribute: str = None) -> Dict[str, Any]:
         """Extract text or attribute from elements on the page."""
         page = await self.ensure_browser()
@@ -654,6 +701,7 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
                 arguments.get("text", ""),
                 arguments.get("max_scrolls", 10)
             ),
+            "browser_extract_job_links": lambda: runtime.extract_job_links(),
         }
 
         if tool_name not in tool_mapping:

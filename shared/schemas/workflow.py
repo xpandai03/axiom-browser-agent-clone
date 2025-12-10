@@ -3,7 +3,11 @@ from pydantic import BaseModel, Field
 import re
 
 
-ActionType = Literal["goto", "click", "type", "upload", "wait", "scroll", "extract", "screenshot", "fill_form", "click_first_job"]
+ActionType = Literal[
+    "goto", "click", "type", "upload", "wait", "scroll",
+    "extract", "screenshot", "fill_form", "click_first_job",
+    "extract_job_links", "loop_jobs"  # Multi-job scraping actions
+]
 ApplyMode = Literal["greenhouse_basic"]
 ExtractMode = Literal["text", "attribute"]
 ScrollMode = Literal["pixels", "to_element", "until_text"]
@@ -30,6 +34,9 @@ class WorkflowStep(BaseModel):
     scroll_direction: Optional[str] = Field("down", description="Scroll direction: up or down (for pixels mode)")
     scroll_amount: Optional[int] = Field(None, ge=0, description="Scroll amount in pixels (for pixels mode)")
     scroll_text: Optional[str] = Field(None, description="Text to scroll until visible (for until_text mode)")
+    # Multi-job scraping fields (for loop_jobs action)
+    max_jobs: Optional[int] = Field(None, ge=1, le=50, description="Max jobs to process (for loop_jobs)")
+    job_url_source: Optional[str] = Field(None, description="Label of extracted job URLs to iterate (for loop_jobs)")
 
     def interpolate(self, user_data: Dict[str, str]) -> "WorkflowStep":
         """Replace {{user.x}} placeholders with actual values from user_data."""
@@ -66,6 +73,9 @@ class WorkflowStep(BaseModel):
             scroll_direction=self.scroll_direction,
             scroll_amount=self.scroll_amount,
             scroll_text=replace_placeholders(self.scroll_text),
+            # Multi-job scraping fields
+            max_jobs=self.max_jobs,
+            job_url_source=self.job_url_source,
         )
 
 

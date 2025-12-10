@@ -27,6 +27,8 @@ class MCPToolResult:
     error: Optional[str] = None
     screenshot_base64: Optional[str] = None
     extracted_data: Optional[Union[List[str], str]] = None
+    jobs_data: Optional[List[Any]] = None  # For loop_jobs action results
+    fields_filled: Optional[List[Any]] = None  # For fill_form action results
 
 
 class BaseMCPClient(ABC):
@@ -114,6 +116,10 @@ class BaseMCPClient(ABC):
     async def scroll_until_text(self, text: str, max_scrolls: int = 10) -> MCPToolResult:
         """Scroll until specific text is found on the page."""
         return await self.call_tool("browser_scroll_until_text", {"text": text, "max_scrolls": max_scrolls})
+
+    async def extract_job_links(self) -> MCPToolResult:
+        """Extract all job posting links from a Greenhouse board page."""
+        return await self.call_tool("browser_extract_job_links", {})
 
 
 class CursorMCPClient(BaseMCPClient):
