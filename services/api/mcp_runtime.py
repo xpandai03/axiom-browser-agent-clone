@@ -91,15 +91,72 @@ class PlaywrightRuntime:
         logger.info("Browser closed")
 
     async def navigate(self, url: str) -> Dict[str, Any]:
-        """Navigate to a URL."""
+        """Navigate to a URL and auto-dismiss cookie banners."""
         page = await self.ensure_browser()
         response = await page.goto(url, wait_until="domcontentloaded")
 
+        # Auto-dismiss cookie banners
+        cookie_dismissed = await self._try_dismiss_cookies(page)
+
+        content = f"Navigated to {url}"
+        if cookie_dismissed:
+            content += " (cookie banner dismissed)"
+
         return {
             "success": True,
-            "content": f"Navigated to {url}",
+            "content": content,
             "status": response.status if response else None,
+            "cookie_dismissed": cookie_dismissed,
         }
+
+    async def _try_dismiss_cookies(self, page) -> bool:
+        """Try to dismiss cookie consent banners with common selectors."""
+        # Common cookie consent button selectors (ordered by specificity)
+        cookie_selectors = [
+            # Greenhouse/OneTrust specific
+            "button:has-text('Accept cookies')",
+            "button:has-text('Accept Cookies')",
+            "#onetrust-accept-btn-handler",
+            ".onetrust-accept-btn-handler",
+            # Generic accept buttons
+            "button:has-text('Accept all')",
+            "button:has-text('Accept All')",
+            "button:has-text('Accept')",
+            "button:has-text('I Accept')",
+            "button:has-text('I agree')",
+            "button:has-text('Agree')",
+            "button:has-text('OK')",
+            "button:has-text('Got it')",
+            # Common class/id patterns
+            "[data-testid='cookie-accept']",
+            ".cookie-accept",
+            ".accept-cookies",
+            ".cookie-consent-accept",
+            "#accept-cookies",
+            "#cookie-accept",
+            # Close buttons on cookie modals
+            ".cookie-banner button",
+            ".cookie-notice button",
+            ".cookie-popup button",
+            "[class*='cookie'] button:has-text('Accept')",
+            "[class*='cookie'] button:has-text('Close')",
+            "[id*='cookie'] button:has-text('Accept')",
+        ]
+
+        for selector in cookie_selectors:
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() > 0 and await locator.is_visible(timeout=500):
+                    await locator.click(timeout=2000)
+                    logger.info(f"Dismissed cookie banner with selector: {selector}")
+                    # Wait briefly for banner to disappear
+                    await asyncio.sleep(0.5)
+                    return True
+            except Exception:
+                # Selector not found or not clickable, try next
+                continue
+
+        return False
 
     async def click(self, selector: str = None) -> Dict[str, Any]:
         """Click an element. If no selector provided, auto-detect clickable element."""
