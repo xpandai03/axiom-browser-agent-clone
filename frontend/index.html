@@ -347,9 +347,12 @@
             </div>
 
             <div class="picker-footer">
-                <span class="picker-hint">Click an element to select it</span>
+                <span class="picker-hint" id="picker-hint">Click an element to select it</span>
                 <span class="picker-element-count" id="picker-element-count"></span>
-                <button class="btn-secondary" onclick="closeElementPicker()">Cancel</button>
+                <div class="picker-footer-buttons">
+                    <button class="btn-primary hidden" id="picker-done-btn" onclick="closeElementPicker()">Done</button>
+                    <button class="btn-secondary" onclick="closeElementPicker()">Cancel</button>
+                </div>
             </div>
         </div>
     </div>

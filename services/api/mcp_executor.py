@@ -206,10 +206,23 @@ class MCPExecutor:
             return MCPToolResult(success=True, content=f"Waited {duration}ms")
 
         elif step.action == "scroll":
-            if step.selector:
-                # Wait for element then scroll to it
-                await client.wait_for_selector(step.selector)
-            return await client.scroll("down")
+            scroll_mode = getattr(step, 'scroll_mode', 'pixels')
+
+            if scroll_mode == 'to_element':
+                if not step.selector:
+                    return MCPToolResult(success=False, content=None, error="No selector provided for scroll-to-element")
+                return await client.scroll_to_element(step.selector)
+
+            elif scroll_mode == 'until_text':
+                scroll_text = getattr(step, 'scroll_text', None)
+                if not scroll_text:
+                    return MCPToolResult(success=False, content=None, error="No text provided for scroll-until-text")
+                return await client.scroll_until_text(scroll_text)
+
+            else:  # pixels mode (default)
+                direction = getattr(step, 'scroll_direction', 'down')
+                amount = getattr(step, 'scroll_amount', None)
+                return await client.scroll(direction, amount)
 
         elif step.action == "extract":
             # Extract text or attributes from page elements

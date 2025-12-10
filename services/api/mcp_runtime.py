@@ -199,19 +199,57 @@ class PlaywrightRuntime:
             return {"success": True, "content": f"Waited {timeout}ms"}
 
     async def scroll(self, direction: str = "down", amount: int = None) -> Dict[str, Any]:
-        """Scroll the page."""
+        """Scroll the page by pixels."""
         page = await self.ensure_browser()
 
+        scroll_amount = amount or 500
         if direction == "down":
-            scroll_amount = amount or 500
             await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
         elif direction == "up":
-            scroll_amount = amount or 500
             await page.evaluate(f"window.scrollBy(0, -{scroll_amount})")
 
         return {
             "success": True,
-            "content": f"Scrolled {direction}",
+            "content": f"Scrolled {direction} by {scroll_amount}px",
+        }
+
+    async def scroll_to_element(self, selector: str) -> Dict[str, Any]:
+        """Scroll to bring an element into view."""
+        page = await self.ensure_browser()
+
+        try:
+            locator = page.locator(selector)
+            await locator.scroll_into_view_if_needed(timeout=10000)
+            return {
+                "success": True,
+                "content": f"Scrolled to element: {selector}",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to scroll to element {selector}: {str(e)}",
+            }
+
+    async def scroll_until_text(self, text: str, max_scrolls: int = 10) -> Dict[str, Any]:
+        """Scroll down until specific text is found on the page."""
+        page = await self.ensure_browser()
+
+        for i in range(max_scrolls):
+            # Check if text exists on page
+            content = await page.content()
+            if text.lower() in content.lower():
+                return {
+                    "success": True,
+                    "content": f"Found text '{text}' after {i} scrolls",
+                }
+
+            # Scroll down
+            await page.evaluate("window.scrollBy(0, 500)")
+            await asyncio.sleep(0.5)  # Wait for content to load
+
+        return {
+            "success": False,
+            "error": f"Text '{text}' not found after {max_scrolls} scrolls",
         }
 
     async def file_upload(self, selector: str, paths: list) -> Dict[str, Any]:

@@ -1937,6 +1937,20 @@ body {
 .picker-hint {
     font-size: 0.8125rem;
     color: var(--neutral-500);
+    flex: 1;
+}
+
+.picker-hint code {
+    background: var(--neutral-800);
+    padding: 0.125rem 0.375rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    color: var(--accent-cyan);
+}
+
+.picker-footer-buttons {
+    display: flex;
+    gap: 0.5rem;
 }
 
 .picker-element-count {

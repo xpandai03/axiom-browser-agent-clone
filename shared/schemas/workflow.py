@@ -6,6 +6,7 @@ import re
 ActionType = Literal["goto", "click", "type", "upload", "wait", "scroll", "extract", "screenshot", "fill_form"]
 ApplyMode = Literal["greenhouse_basic"]
 ExtractMode = Literal["text", "attribute"]
+ScrollMode = Literal["pixels", "to_element", "until_text"]
 
 
 class WorkflowStep(BaseModel):
@@ -23,6 +24,11 @@ class WorkflowStep(BaseModel):
     # Fill form action fields
     fields: Optional[Dict[str, str]] = Field(None, description="Field name to value mapping for fill_form action")
     auto_detect: bool = Field(False, description="Auto-detect selectors for clicks and form fields")
+    # Enhanced scroll fields
+    scroll_mode: ScrollMode = Field("pixels", description="Scroll mode: pixels, to_element, or until_text")
+    scroll_direction: Optional[str] = Field("down", description="Scroll direction: up or down (for pixels mode)")
+    scroll_amount: Optional[int] = Field(None, ge=0, description="Scroll amount in pixels (for pixels mode)")
+    scroll_text: Optional[str] = Field(None, description="Text to scroll until visible (for until_text mode)")
 
     def interpolate(self, user_data: Dict[str, str]) -> "WorkflowStep":
         """Replace {{user.x}} placeholders with actual values from user_data."""
@@ -53,6 +59,11 @@ class WorkflowStep(BaseModel):
             extract_mode=self.extract_mode,
             fields=interpolated_fields,
             auto_detect=self.auto_detect,
+            # Enhanced scroll fields
+            scroll_mode=self.scroll_mode,
+            scroll_direction=self.scroll_direction,
+            scroll_amount=self.scroll_amount,
+            scroll_text=replace_placeholders(self.scroll_text),
         )
 
 

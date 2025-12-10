@@ -661,9 +661,13 @@ Take a screenshot`,
             label: 'Scroll Page',
             icon: STEP_ICONS.scroll,
             category: 'Navigate',
-            description: 'Scroll page or to an element',
+            description: 'Scroll page by pixels, to an element, or until text is found',
             fields: [
-                { name: 'selector', type: 'text', label: 'Scroll to element (optional)', required: false, placeholder: '#footer, .section', hint: 'Leave empty to scroll down' }
+                { name: 'scroll_mode', type: 'select', label: 'Scroll Mode', options: ['pixels', 'to_element', 'until_text'], default: 'pixels', hint: 'How to determine scroll behavior' },
+                { name: 'scroll_direction', type: 'select', label: 'Direction', options: ['down', 'up'], default: 'down', showWhen: { scroll_mode: 'pixels' }, hint: 'Scroll up or down' },
+                { name: 'scroll_amount', type: 'number', label: 'Amount (pixels)', default: 500, min: 0, placeholder: '500', showWhen: { scroll_mode: 'pixels' }, hint: 'Distance to scroll in pixels' },
+                { name: 'selector', type: 'text', label: 'Target Element', required: true, placeholder: '#footer, .section', showWhen: { scroll_mode: 'to_element' }, hint: 'CSS selector of element to scroll into view' },
+                { name: 'scroll_text', type: 'text', label: 'Text to Find', required: true, placeholder: 'Load more...', showWhen: { scroll_mode: 'until_text' }, hint: 'Scroll until this text appears on page' }
             ]
         },
         extract: {
@@ -1102,7 +1106,20 @@ Take a screenshot`,
             return errors;
         },
         screenshot: () => ({}),
-        scroll: () => ({}),
+        scroll: (step) => {
+            const errors = {};
+            const mode = step.scroll_mode || 'pixels';
+            if (mode === 'to_element') {
+                if (!step.selector || !step.selector.trim()) {
+                    errors.selector = 'Target element selector is required';
+                }
+            } else if (mode === 'until_text') {
+                if (!step.scroll_text || !step.scroll_text.trim()) {
+                    errors.scroll_text = 'Search text is required';
+                }
+            }
+            return errors;
+        },
         upload: (step) => {
             const errors = {};
             if (!step.selector || !step.selector.trim()) {
@@ -1221,8 +1238,10 @@ Take a screenshot`,
                 case 'url':
                 case 'text':
                     const isSelector = field.name === 'selector' || field.label.toLowerCase().includes('selector');
+                    // For scroll action's selector field, use scroll-target mode
+                    const pickerModeAttr = (step.action === 'scroll' && field.name === 'selector') ? 'scroll-target' : 'click';
                     const selectBtnHtml = isSelector ? `
-                        <button type="button" class="btn-select-element" data-index="${index}" data-field="${field.name}" title="Select from page">
+                        <button type="button" class="btn-select-element" data-index="${index}" data-field="${field.name}" data-picker-mode="${pickerModeAttr}" title="Select from page">
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
                         </button>
                     ` : '';
@@ -1398,7 +1417,8 @@ Take a screenshot`,
                 e.preventDefault();
                 const index = parseInt(btn.dataset.index);
                 const field = btn.dataset.field;
-                openElementPicker(index, field);
+                const mode = btn.dataset.pickerMode || 'click';
+                openElementPicker(index, field, mode);
             });
         });
 
@@ -1730,8 +1750,11 @@ Take a screenshot`,
 
     let pickerTargetField = null;  // Which field to populate when element is selected
     let pickerTargetIndex = null;  // Step index for the field
+    let pickerMode = 'click';  // 'click' (default - closes on select) | 'scroll-target' (stays open for interaction)
 
     const pickerModal = document.getElementById('element-picker-modal');
+    const pickerHint = document.getElementById('picker-hint');
+    const pickerDoneBtn = document.getElementById('picker-done-btn');
     const pickerUrlInput = document.getElementById('picker-url');
     const pickerLoadBtn = document.getElementById('picker-load-btn');
     const pickerViewport = document.getElementById('picker-viewport');
@@ -1741,9 +1764,10 @@ Take a screenshot`,
     const pickerEmpty = document.getElementById('picker-empty');
     const pickerElementCount = document.getElementById('picker-element-count');
 
-    window.openElementPicker = function(stepIndex, fieldName) {
+    window.openElementPicker = function(stepIndex, fieldName, mode = 'click') {
         pickerTargetIndex = stepIndex;
         pickerTargetField = fieldName;
+        pickerMode = mode;
 
         // Reset state
         if (pickerScreenshot) pickerScreenshot.classList.add('hidden');
@@ -1751,6 +1775,22 @@ Take a screenshot`,
         if (pickerEmpty) pickerEmpty.classList.remove('hidden');
         if (pickerLoading) pickerLoading.classList.add('hidden');
         if (pickerElementCount) pickerElementCount.textContent = '';
+
+        // Update UI based on mode
+        if (pickerHint) {
+            if (mode === 'scroll-target') {
+                pickerHint.textContent = 'Click element to set as scroll target';
+            } else {
+                pickerHint.textContent = 'Click an element to select it';
+            }
+        }
+        if (pickerDoneBtn) {
+            if (mode === 'scroll-target') {
+                pickerDoneBtn.classList.remove('hidden');
+            } else {
+                pickerDoneBtn.classList.add('hidden');
+            }
+        }
 
         // Pre-fill URL from goto step if available
         const gotoStep = builderSteps.find(s => s.action === 'goto' && s.url);
@@ -1768,6 +1808,10 @@ Take a screenshot`,
         if (pickerModal) pickerModal.classList.add('hidden');
         pickerTargetField = null;
         pickerTargetIndex = null;
+        pickerMode = 'click';
+        // Reset hint text and done button
+        if (pickerHint) pickerHint.textContent = 'Click an element to select it';
+        if (pickerDoneBtn) pickerDoneBtn.classList.add('hidden');
     };
 
     async function loadPageForPicker() {
@@ -1870,7 +1914,17 @@ Take a screenshot`,
             // Update the step with selected selector
             updateStep(pickerTargetIndex, pickerTargetField, selector);
         }
-        closeElementPicker();
+
+        // Handle based on picker mode
+        if (pickerMode === 'click') {
+            // Default: close immediately after selection
+            closeElementPicker();
+        } else if (pickerMode === 'scroll-target') {
+            // Scroll-target mode: show confirmation but keep picker open
+            if (pickerHint) {
+                pickerHint.innerHTML = `Selected: <code>${escapeHtml(selector)}</code> - Click "Done" to close or pick another`;
+            }
+        }
     }
 
     // Event listeners for element picker
