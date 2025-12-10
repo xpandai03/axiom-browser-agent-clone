@@ -12,11 +12,31 @@ logger = logging.getLogger(__name__)
 _client: Optional[OpenAI] = None
 
 
+def _get_openai_api_key() -> Optional[str]:
+    """
+    Get OpenAI API key from environment variables.
+    Single source of truth - checks all supported env var names.
+    """
+    env_vars = [
+        "API_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+        "AI_INTEGRATIONS_OPENAI_API_KEY",
+    ]
+
+    for var_name in env_vars:
+        key = os.environ.get(var_name)
+        if key and len(key.strip()) > 0:
+            logger.debug(f"Found OpenAI API key from {var_name}")
+            return key.strip()
+
+    return None
+
+
 def get_openai_client() -> OpenAI:
     """Get or create the OpenAI client."""
     global _client
     if _client is None:
-        api_key = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        api_key = _get_openai_api_key()
         if not api_key:
             raise ValueError("OpenAI API key not set. Set OPENAI_API_KEY environment variable.")
         _client = OpenAI(
@@ -24,6 +44,7 @@ def get_openai_client() -> OpenAI:
             base_url=os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL"),
         )
     return _client
+
 
 WORKFLOW_SYSTEM_PROMPT = """You are a browser automation workflow parser. Convert natural language instructions into a JSON object containing a "steps" array of structured workflow steps.
 

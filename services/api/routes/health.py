@@ -1,44 +1,40 @@
-import os
 from fastapi import APIRouter
 from datetime import datetime
 
+from ..config import get_openai_api_key
+
 router = APIRouter(prefix="/health", tags=["health"])
-
-
-def _check_openai_key() -> bool:
-    """Check if OpenAI API key is available."""
-    key = (
-        os.environ.get("API_OPENAI_API_KEY") or
-        os.environ.get("OPENAI_API_KEY") or
-        os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
-    )
-    return key is not None and len(key) > 0
 
 
 @router.get("")
 async def health_check():
     """Health check endpoint."""
+    key, source = get_openai_api_key()
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "axiom-api",
-        "openai_key_loaded": _check_openai_key(),
+        "openai_key_loaded": key is not None,
+        "openai_env_source": source,
     }
 
 
 @router.get("/ready")
 async def readiness_check():
     """Readiness check for Kubernetes/Docker."""
+    key, source = get_openai_api_key()
     return {
         "status": "ready",
         "timestamp": datetime.utcnow().isoformat(),
-        "openai_key_loaded": _check_openai_key(),
+        "openai_key_loaded": key is not None,
+        "openai_env_source": source,
     }
 
 
 @router.get("/browser-check")
 async def browser_check():
     """Test that Playwright browser launches successfully."""
+    key, source = get_openai_api_key()
     try:
         from playwright.async_api import async_playwright
 
@@ -56,12 +52,14 @@ async def browser_check():
             "status": "browser_working",
             "page_title": title,
             "timestamp": datetime.utcnow().isoformat(),
-            "openai_key_loaded": _check_openai_key(),
+            "openai_key_loaded": key is not None,
+            "openai_env_source": source,
         }
     except Exception as e:
         return {
             "status": "browser_failed",
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat(),
-            "openai_key_loaded": _check_openai_key(),
+            "openai_key_loaded": key is not None,
+            "openai_env_source": source,
         }

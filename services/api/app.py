@@ -10,7 +10,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from .config import get_config
+from .config import get_config, log_openai_key_status
 from .routes import workflow_router, resume_router, health_router
 from .mcp_client import shutdown_mcp_client
 from .mcp_runtime import shutdown_runtime
@@ -23,6 +23,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     logger.info("Starting Axiom API...")
+    log_openai_key_status()  # Log OpenAI key status at startup
     logger.info("MCP integration ready - browser will start on first workflow request")
 
     yield

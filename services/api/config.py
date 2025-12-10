@@ -1,5 +1,32 @@
 import os
+import logging
 from pydantic_settings import BaseSettings
+from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+def get_openai_api_key() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Get OpenAI API key from environment variables.
+
+    Checks in order: API_OPENAI_API_KEY, OPENAI_API_KEY, AI_INTEGRATIONS_OPENAI_API_KEY
+
+    Returns:
+        Tuple of (api_key, source_env_var_name) or (None, None) if not found
+    """
+    env_vars = [
+        "API_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+        "AI_INTEGRATIONS_OPENAI_API_KEY",
+    ]
+
+    for var_name in env_vars:
+        key = os.environ.get(var_name)
+        if key and len(key.strip()) > 0:
+            return key.strip(), var_name
+
+    return None, None
 
 
 class APIConfig(BaseSettings):
@@ -25,20 +52,35 @@ class APIConfig(BaseSettings):
         extra = "ignore"
 
     @property
-    def openai_api_key(self) -> str | None:
+    def openai_api_key(self) -> Optional[str]:
         """Get OpenAI API key from environment (supports multiple var names)."""
-        return (
-            os.environ.get("API_OPENAI_API_KEY") or
-            os.environ.get("OPENAI_API_KEY") or
-            os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
-        )
+        key, _ = get_openai_api_key()
+        return key
 
     @property
     def openai_key_loaded(self) -> bool:
         """Check if OpenAI API key is available."""
-        return self.openai_api_key is not None and len(self.openai_api_key) > 0
+        key, _ = get_openai_api_key()
+        return key is not None
+
+    @property
+    def openai_env_source(self) -> Optional[str]:
+        """Get the env var name that provided the OpenAI key."""
+        _, source = get_openai_api_key()
+        return source
 
 
 def get_config() -> APIConfig:
     """Get API configuration from environment."""
     return APIConfig()
+
+
+def log_openai_key_status():
+    """Log OpenAI API key status at startup (does NOT log the key itself)."""
+    key, source = get_openai_api_key()
+    if key:
+        # Mask the key for logging (show first 4 and last 4 chars)
+        masked = f"{key[:4]}...{key[-4:]}" if len(key) > 8 else "***"
+        logger.info(f"OpenAI API key FOUND from {source} (masked: {masked})")
+    else:
+        logger.warning("OpenAI API key NOT FOUND - checked: API_OPENAI_API_KEY, OPENAI_API_KEY, AI_INTEGRATIONS_OPENAI_API_KEY")
