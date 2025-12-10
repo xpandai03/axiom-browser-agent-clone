@@ -6,6 +6,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
 
+# Load .env file at startup
+from dotenv import load_dotenv
+load_dotenv()
+
 from .config import get_config
 from .routes import workflow_router, resume_router, health_router
 from .mcp_client import shutdown_mcp_client

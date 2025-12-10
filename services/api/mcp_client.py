@@ -12,7 +12,7 @@ For standalone usage, this module provides a mock/simulation mode.
 """
 
 import logging
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Union
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 
@@ -26,6 +26,7 @@ class MCPToolResult:
     content: Any = None
     error: Optional[str] = None
     screenshot_base64: Optional[str] = None
+    extracted_data: Optional[Union[List[str], str]] = None
 
 
 class BaseMCPClient(ABC):
@@ -80,6 +81,15 @@ class BaseMCPClient(ABC):
         """Get page content or element content."""
         args = {"selector": selector} if selector else {}
         return await self.call_tool("browser_get_content", args)
+
+    async def extract(self, selector: str = None, extract_mode: str = "text", attribute: str = None) -> MCPToolResult:
+        """Extract text or attribute from elements."""
+        args = {"extract_mode": extract_mode}
+        if selector:
+            args["selector"] = selector
+        if attribute:
+            args["attribute"] = attribute
+        return await self.call_tool("browser_extract", args)
 
     async def close(self) -> MCPToolResult:
         """Close the browser."""

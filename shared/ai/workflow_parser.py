@@ -28,14 +28,21 @@ def get_openai_client() -> OpenAI:
 WORKFLOW_SYSTEM_PROMPT = """You are a browser automation workflow parser. Convert natural language instructions into a JSON object containing a "steps" array of structured workflow steps.
 
 Each step must be an object with the following structure:
-- "action": one of "goto", "click", "type", "upload", "wait", "scroll"
+- "action": one of "goto", "click", "type", "upload", "wait", "scroll", "fill_form", "screenshot"
 - "selector": CSS selector for the target element (when applicable)
 - "url": URL to navigate to (for "goto" action)
 - "value": text to type (for "type" action)
 - "file": filename to upload (for "upload" action)
 - "duration": wait time in ms (for "wait" action)
+- "auto_detect": boolean, set to true for automatic selector detection (for "click" and "fill_form")
+- "fields": object mapping field names to values (for "fill_form" action)
 
-Use placeholder variables like {{user.name}}, {{user.email}}, {{user.phone}} for user data fields.
+Use placeholder variables like {{user.first_name}}, {{user.last_name}}, {{user.email}}, {{user.phone}}, {{user.location}}, {{user.linkedin_url}} for user data fields.
+
+SPECIAL INSTRUCTIONS FOR JOB APPLICATIONS:
+- When the user says "click apply", "click the apply button", or "apply to this job", use: {"action": "click", "auto_detect": true}
+- When the user says "fill the form", "fill the application", or "fill fields with user data", use: {"action": "fill_form", "auto_detect": true, "fields": {"first_name": "{{user.first_name}}", "last_name": "{{user.last_name}}", "email": "{{user.email}}", "phone": "{{user.phone}}", "location": "{{user.location}}", "linkedin_url": "{{user.linkedin_url}}"}}
+- Add wait steps (1-2 seconds) after navigation and clicking to allow pages to load
 
 Return a JSON object with a "steps" key containing the array of steps."""
 

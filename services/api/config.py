@@ -22,6 +22,7 @@ class APIConfig(BaseSettings):
     class Config:
         env_prefix = "API_"
         env_file = ".env"
+        extra = "ignore"  # Ignore extra env vars like OPENAI_API_KEY
 
 
 def get_config() -> APIConfig:

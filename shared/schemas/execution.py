@@ -1,10 +1,18 @@
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Union
 from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
 
 
 ExecutionStatus = Literal["pending", "running", "success", "failed", "skipped"]
+
+
+class FieldFillResult(BaseModel):
+    """Result of filling a single form field."""
+    field_name: str = Field(..., description="Name of the field that was filled")
+    selector_used: str = Field(..., description="Selector that was used to find the field")
+    success: bool = Field(True, description="Whether the field was successfully filled")
+    error: Optional[str] = Field(None, description="Error message if field fill failed")
 
 
 class StepResult(BaseModel):
@@ -18,6 +26,10 @@ class StepResult(BaseModel):
     logs: List[str] = Field(default_factory=list, description="Log messages during execution")
     error: Optional[str] = Field(None, description="Error message if step failed")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="When step completed")
+    # Extract action result field
+    extracted_data: Optional[Union[List[str], str]] = Field(None, description="Data extracted from page (for extract action)")
+    # Fill form action result field
+    fields_filled: Optional[List[FieldFillResult]] = Field(None, description="Details of form fields that were filled")
 
     class Config:
         json_encoders = {

@@ -1,87 +1,134 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Axiom Builder - Browser Automation Engine</title>
+    <title>Browser Agent - Automate repetitive tasks on the web</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Axiom Builder</h1>
-            <p class="subtitle">Transform natural language instructions into automated browser workflows</p>
-        </header>
-
-        <main>
-            <section class="input-section">
-                <div class="input-group">
-                    <label for="instructions">Workflow Instructions</label>
-                    <textarea id="instructions" placeholder="Example: Go to https://example.com → wait 1 second → take a screenshot"></textarea>
+    <main class="app-container">
+        <!-- LEFT PANE: Chat-like interface -->
+        <aside class="left-pane">
+            <div class="left-pane-inner">
+                <!-- Header -->
+                <div class="pane-header">
+                    <h1 class="brand-title">Browser Agent</h1>
+                    <p class="brand-subtitle">Automate repetitive tasks on the web</p>
                 </div>
 
-                <div class="button-row">
-                    <button id="demo-btn" class="demo-btn">Demo Workflow</button>
-                    <button id="test-btn" class="secondary-btn">Quick Test</button>
-                    <button id="run-btn" class="primary-btn">Run Workflow</button>
+                <!-- Suggestion Cards Grid -->
+                <div class="suggestion-cards">
+                    <button class="suggestion-card" data-workflow="greenhouse">
+                        <span class="card-title">Apply to jobs</span>
+                        <span class="card-subtitle">on Greenhouse automatically</span>
+                    </button>
+                    <button class="suggestion-card" data-workflow="extract">
+                        <span class="card-title">Extract job listings</span>
+                        <span class="card-subtitle">from company career pages</span>
+                    </button>
+                    <button class="suggestion-card" data-workflow="click">
+                        <span class="card-title">Navigate and click</span>
+                        <span class="card-subtitle">through job postings</span>
+                    </button>
+                    <button class="suggestion-card" data-workflow="test">
+                        <span class="card-title">Quick test</span>
+                        <span class="card-subtitle">screenshot any website</span>
+                    </button>
                 </div>
 
-                <div class="input-group user-data-group">
-                    <label>User Data (for placeholders like {{user.name}})</label>
+                <!-- Chat Messages Area (future: assistant messages) -->
+                <div class="chat-messages" id="chat-messages"></div>
+
+                <!-- Input Area -->
+                <div class="input-area">
+                    <textarea
+                        id="instructions"
+                        placeholder="Describe your automation task..."
+                        rows="3"
+                    ></textarea>
+                    <div class="input-controls">
+                        <button class="attach-btn" id="attach-btn" title="Attach file">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                            </svg>
+                        </button>
+                        <button class="send-btn" id="send-btn" title="Run workflow">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m5 12 7-7 7 7"/>
+                                <path d="M12 19V5"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Collapsible User Data Panel -->
+                <details class="user-data-panel">
+                    <summary>
+                        <span class="summary-text">User Profile Data</span>
+                        <svg class="chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="m6 9 6 6 6-6"/>
+                        </svg>
+                    </summary>
                     <div class="user-data-fields">
-                        <input type="text" id="user-name" placeholder="Name" class="user-field">
+                        <div class="field-row">
+                            <input type="text" id="user-first-name" placeholder="First Name" class="user-field">
+                            <input type="text" id="user-last-name" placeholder="Last Name" class="user-field">
+                        </div>
                         <input type="email" id="user-email" placeholder="Email" class="user-field">
                         <input type="tel" id="user-phone" placeholder="Phone" class="user-field">
+                        <input type="text" id="user-location" placeholder="Location (City, State)" class="user-field">
+                        <input type="url" id="user-linkedin" placeholder="LinkedIn URL" class="user-field">
                     </div>
-                </div>
+                </details>
 
-                <div class="input-group">
-                    <label for="job-description">Job Description (optional - for resume tailoring)</label>
-                    <textarea id="job-description" placeholder="Paste the job description here to generate a tailored resume..."></textarea>
-                </div>
+                <!-- Hidden file input for attach button -->
+                <input type="file" id="resume" accept=".txt,.md,.doc,.docx,.pdf" style="display: none;">
 
-                <div class="input-group">
-                    <label for="resume">Upload Resume (optional)</label>
-                    <input type="file" id="resume" accept=".txt,.md,.doc,.docx,.pdf">
-                </div>
-            </section>
-
-            <section class="output-section" id="output-section" style="display: none;">
-                <div class="output-panel">
-                    <h2>Parsed Workflow Steps</h2>
-                    <div id="workflow-steps" class="code-block"></div>
-                </div>
-
-                <div class="output-panel">
-                    <h2>Execution Logs</h2>
-                    <div id="execution-status" class="execution-status"></div>
-                    <div id="execution-logs" class="log-block"></div>
-                </div>
-
-                <div class="output-panel screenshot-panel" id="screenshot-panel" style="display: none;">
-                    <h2>Step Screenshots</h2>
-                    <div id="screenshot-gallery" class="screenshot-gallery"></div>
-                    <div id="screenshot-viewer" class="screenshot-viewer" style="display: none;">
-                        <button id="close-viewer" class="close-btn">&times;</button>
-                        <img id="viewer-image" src="" alt="Screenshot">
-                        <div id="viewer-caption" class="viewer-caption"></div>
-                    </div>
-                </div>
-
-                <div class="output-panel" id="resume-panel" style="display: none;">
-                    <h2>Tailored Resume</h2>
-                    <div id="tailored-resume" class="resume-block"></div>
-                </div>
-            </section>
-
-            <div id="loading" class="loading" style="display: none;">
-                <div class="spinner"></div>
-                <p id="loading-text">Processing workflow...</p>
+                <!-- Hidden job description (optional, can be expanded later) -->
+                <input type="hidden" id="job-description" value="">
             </div>
+        </aside>
 
-            <div id="error" class="error" style="display: none;"></div>
-        </main>
+        <!-- RIGHT PANE: Live Automation Timeline -->
+        <section class="right-pane">
+            <div class="timeline-container" id="timeline">
+                <!-- Empty State -->
+                <div class="empty-state" id="empty-state">
+                    <div class="empty-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <rect width="18" height="18" x="3" y="3" rx="2"/>
+                            <path d="M7 7h10"/>
+                            <path d="M7 12h10"/>
+                            <path d="M7 17h10"/>
+                        </svg>
+                    </div>
+                    <h2 class="empty-title">Automation Timeline</h2>
+                    <p class="empty-text">Select a workflow card or describe your task to begin.<br>Each step will appear here as it executes.</p>
+                </div>
+
+                <!-- Timeline cards will be rendered here dynamically -->
+            </div>
+        </section>
+    </main>
+
+    <!-- Screenshot Viewer Modal -->
+    <div id="screenshot-viewer" class="screenshot-viewer">
+        <div class="viewer-backdrop" onclick="closeScreenshotViewer()"></div>
+        <div class="viewer-content">
+            <button id="close-viewer" class="close-btn" onclick="closeScreenshotViewer()">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 6 6 18"/>
+                    <path d="m6 6 12 12"/>
+                </svg>
+            </button>
+            <img id="viewer-image" src="" alt="Screenshot">
+            <div id="viewer-caption" class="viewer-caption"></div>
+        </div>
     </div>
+
+    <!-- Error Toast -->
+    <div id="error" class="error-toast"></div>
 
     <script src="/static/main.js"></script>
 </body>

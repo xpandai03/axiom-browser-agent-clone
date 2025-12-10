@@ -98,15 +98,56 @@ class PlaywrightRuntime:
             "status": response.status if response else None,
         }
 
-    async def click(self, selector: str) -> Dict[str, Any]:
-        """Click an element."""
+    async def click(self, selector: str = None) -> Dict[str, Any]:
+        """Click an element. If no selector provided, auto-detect clickable element."""
         page = await self.ensure_browser()
+
+        auto_selected = None
+        if not selector:
+            # Auto-detection logic: try common patterns
+            # Greenhouse-specific selectors first
+            auto_selectors = [
+                # Greenhouse Apply button patterns
+                ("a[href*='#app']", "Greenhouse Apply anchor"),
+                ("a:has-text('Apply for this job')", "Apply for this job link"),
+                ("a:has-text('Apply now')", "Apply now link"),
+                ("a:has-text('Apply')", "Apply link"),
+                ("button:has-text('Apply for this job')", "Apply button"),
+                ("button:has-text('Apply now')", "Apply now button"),
+                ("button:has-text('Apply')", "Apply button"),
+                # Generic fallbacks
+                (".opening a", "Job listing link"),
+                ("a[href]", "First link"),
+                ("button", "First button"),
+            ]
+
+            for sel, desc in auto_selectors:
+                try:
+                    locator = page.locator(sel).first
+                    if await locator.count() > 0 and await locator.is_visible():
+                        selector = sel
+                        auto_selected = f"Auto-selected selector: {sel} ({desc})"
+                        break
+                except Exception:
+                    continue
+
+            if not selector:
+                return {
+                    "success": False,
+                    "error": "No clickable element found (tried Apply button, links, buttons)",
+                }
+
         await page.wait_for_selector(selector, state="visible", timeout=10000)
         await page.click(selector)
 
+        content = f"Clicked {selector}"
+        if auto_selected:
+            content = f"{auto_selected}\n{content}"
+
         return {
             "success": True,
-            "content": f"Clicked {selector}",
+            "content": content,
+            "auto_selected": auto_selected,
         }
 
     async def fill(self, selector: str, value: str) -> Dict[str, Any]:
@@ -194,6 +235,61 @@ class PlaywrightRuntime:
         content = await page.content()
         return {"success": True, "content": content[:1000] + "..." if len(content) > 1000 else content}
 
+    async def extract(self, selector: str = None, extract_mode: str = "text", attribute: str = None) -> Dict[str, Any]:
+        """Extract text or attribute from elements on the page."""
+        page = await self.ensure_browser()
+
+        try:
+            if selector:
+                # Extract from specific elements
+                locator = page.locator(selector)
+                count = await locator.count()
+
+                if count == 0:
+                    return {
+                        "success": False,
+                        "error": f"No elements found for selector: {selector}",
+                        "extracted_data": None
+                    }
+
+                if extract_mode == "attribute" and attribute:
+                    # Extract attribute from all matching elements
+                    extracted = []
+                    for i in range(count):
+                        val = await locator.nth(i).get_attribute(attribute)
+                        if val:
+                            extracted.append(val)
+                    return {
+                        "success": True,
+                        "content": f"Extracted '{attribute}' attribute from {len(extracted)} elements",
+                        "extracted_data": extracted
+                    }
+                else:
+                    # Extract inner text from all matching elements
+                    extracted = await locator.all_inner_texts()
+                    # Filter out empty strings
+                    extracted = [t.strip() for t in extracted if t.strip()]
+                    return {
+                        "success": True,
+                        "content": f"Extracted text from {len(extracted)} elements",
+                        "extracted_data": extracted
+                    }
+            else:
+                # Extract full page text
+                body_text = await page.inner_text("body")
+                return {
+                    "success": True,
+                    "content": "Extracted full page text",
+                    "extracted_data": body_text[:5000] if len(body_text) > 5000 else body_text
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Extract failed: {str(e)}",
+                "extracted_data": None
+            }
+
 
 # Global runtime instance
 _runtime: Optional[PlaywrightRuntime] = None
@@ -229,7 +325,7 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
         # Map tool names to runtime methods
         tool_mapping = {
             "browser_navigate": lambda: runtime.navigate(arguments.get("url", "")),
-            "browser_click": lambda: runtime.click(arguments.get("selector", "")),
+            "browser_click": lambda: runtime.click(arguments.get("selector") or None),
             "browser_fill": lambda: runtime.fill(
                 arguments.get("selector", ""),
                 arguments.get("value", "")
@@ -252,6 +348,11 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
                 arguments.get("paths", [])
             ),
             "browser_get_content": lambda: runtime.get_content(arguments.get("selector")),
+            "browser_extract": lambda: runtime.extract(
+                arguments.get("selector"),
+                arguments.get("extract_mode", "text"),
+                arguments.get("attribute")
+            ),
             "browser_close": lambda: runtime.close(),
         }
 
@@ -268,6 +369,7 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
             content=result.get("content"),
             error=result.get("error"),
             screenshot_base64=result.get("screenshot_base64"),
+            extracted_data=result.get("extracted_data"),
         )
 
     except Exception as e:
