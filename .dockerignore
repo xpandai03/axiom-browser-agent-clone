@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv
+.venv
+env
+.env.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Build logs
+*.md
+!README.md
+
+# Local files
+.local
+playwright-mcp
+browser-agent-design
+
+# Test files
+tests
+*.test.py
