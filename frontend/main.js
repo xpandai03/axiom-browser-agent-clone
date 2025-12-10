@@ -87,26 +87,17 @@ Take a screenshot`,
                 {
                     "action": "extract",
                     "selector": "h1",
-                    "extract_mode": "text",
-                    "label": "job_title"
+                    "extract_mode": "text"
                 },
                 {
                     "action": "extract",
-                    "selector": ".location, .app-location, .job-location",
-                    "extract_mode": "text",
-                    "label": "job_location"
+                    "selector": ".location",
+                    "extract_mode": "text"
                 },
                 {
                     "action": "extract",
-                    "selector": ".content, .section, .section-wrapper, #content, .job-body, .description",
-                    "extract_mode": "text",
-                    "label": "job_description"
-                },
-                {
-                    "action": "extract",
-                    "selector": "body",
-                    "extract_mode": "html",
-                    "label": "raw_html"
+                    "selector": "#content",
+                    "extract_mode": "text"
                 },
                 {
                     "action": "screenshot"
