@@ -73,6 +73,47 @@ Take a screenshot`,
 Wait 2 seconds
 Take a screenshot`,
             prefillUserData: false
+        },
+        scrape_greenhouse: {
+            workflow_json: [
+                {
+                    "action": "goto",
+                    "url": "https://boards.greenhouse.io/anthropic/jobs/4020056008"
+                },
+                {
+                    "action": "wait",
+                    "duration": 1500
+                },
+                {
+                    "action": "extract",
+                    "selector": "h1",
+                    "extract_mode": "text",
+                    "label": "job_title"
+                },
+                {
+                    "action": "extract",
+                    "selector": ".location, .app-location, .job-location",
+                    "extract_mode": "text",
+                    "label": "job_location"
+                },
+                {
+                    "action": "extract",
+                    "selector": ".content, .section, .section-wrapper, #content, .job-body, .description",
+                    "extract_mode": "text",
+                    "label": "job_description"
+                },
+                {
+                    "action": "extract",
+                    "selector": "body",
+                    "extract_mode": "html",
+                    "label": "raw_html"
+                },
+                {
+                    "action": "screenshot"
+                }
+            ],
+            description: "Extract title, location & job description",
+            prefillUserData: false
         }
     };
 
@@ -572,6 +613,24 @@ Take a screenshot`,
             const preset = WORKFLOW_PRESETS[workflowKey];
 
             if (preset) {
+                // Check if preset uses workflow_json (Builder mode)
+                if (preset.workflow_json) {
+                    // Switch to Builder mode
+                    switchMode('builder');
+
+                    // Load workflow JSON into builderSteps (deep copy)
+                    builderSteps = JSON.parse(JSON.stringify(preset.workflow_json));
+
+                    // Render the step cards
+                    renderStepsList();
+
+                    // Save to localStorage
+                    saveBuilderState();
+
+                    return;
+                }
+
+                // Original behavior: populate instructions textarea
                 instructionsInput.value = preset.instructions;
                 instructionsInput.focus();
 
