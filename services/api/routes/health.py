@@ -17,8 +17,36 @@ async def health_check():
 @router.get("/ready")
 async def readiness_check():
     """Readiness check for Kubernetes/Docker."""
-    # TODO: Check Redis connection
     return {
         "status": "ready",
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@router.get("/browser-check")
+async def browser_check():
+    """Test that Playwright browser launches successfully."""
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = await browser.new_page()
+            await page.goto("https://example.com")
+            title = await page.title()
+            await browser.close()
+
+        return {
+            "status": "browser_working",
+            "page_title": title,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        return {
+            "status": "browser_failed",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat(),
+        }

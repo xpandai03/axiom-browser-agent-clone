@@ -1,5 +1,5 @@
-# Use Python with Playwright pre-installed
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# Use Python with Playwright 1.57.0 pre-installed
+FROM mcr.microsoft.com/playwright/python:v1.57.0-jammy
 
 WORKDIR /app
 
@@ -13,13 +13,11 @@ COPY . .
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV BROWSER_HEADLESS=true
 
 # Railway provides PORT env variable
-# Default to 8000 if not set
 ENV PORT=8000
 
-# Expose port (Railway overrides this)
 EXPOSE 8000
 
-# Use shell form to allow $PORT expansion
 CMD uvicorn services.api.app:app --host 0.0.0.0 --port $PORT
