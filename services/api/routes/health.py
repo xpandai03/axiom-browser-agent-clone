@@ -1,7 +1,18 @@
+import os
 from fastapi import APIRouter
 from datetime import datetime
 
 router = APIRouter(prefix="/health", tags=["health"])
+
+
+def _check_openai_key() -> bool:
+    """Check if OpenAI API key is available."""
+    key = (
+        os.environ.get("API_OPENAI_API_KEY") or
+        os.environ.get("OPENAI_API_KEY") or
+        os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY")
+    )
+    return key is not None and len(key) > 0
 
 
 @router.get("")
@@ -11,6 +22,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "axiom-api",
+        "openai_key_loaded": _check_openai_key(),
     }
 
 
@@ -20,6 +32,7 @@ async def readiness_check():
     return {
         "status": "ready",
         "timestamp": datetime.utcnow().isoformat(),
+        "openai_key_loaded": _check_openai_key(),
     }
 
 
@@ -43,10 +56,12 @@ async def browser_check():
             "status": "browser_working",
             "page_title": title,
             "timestamp": datetime.utcnow().isoformat(),
+            "openai_key_loaded": _check_openai_key(),
         }
     except Exception as e:
         return {
             "status": "browser_failed",
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat(),
+            "openai_key_loaded": _check_openai_key(),
         }
