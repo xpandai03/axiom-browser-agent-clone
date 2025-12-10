@@ -63,7 +63,19 @@ class PlaywrightRuntime:
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=self._headless,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--no-first-run",
+                "--single-process",
+            ]
         )
         self._context = await self._browser.new_context(
             viewport={"width": 1280, "height": 720}
@@ -93,7 +105,32 @@ class PlaywrightRuntime:
     async def navigate(self, url: str) -> Dict[str, Any]:
         """Navigate to a URL and auto-dismiss cookie banners."""
         page = await self.ensure_browser()
-        response = await page.goto(url, wait_until="domcontentloaded")
+
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Navigation error to {url}: {error_msg}")
+
+            # Check if page crashed - if so, try to recover
+            if "crashed" in error_msg.lower() or "closed" in error_msg.lower():
+                logger.info("Page crashed, attempting browser restart...")
+                try:
+                    await self.close()
+                    page = await self.ensure_browser()
+                    response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                except Exception as retry_error:
+                    return {
+                        "success": False,
+                        "error": f"Page.goto: {error_msg}",
+                        "content": None,
+                    }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Navigation failed: {error_msg}",
+                    "content": None,
+                }
 
         # Auto-dismiss cookie banners
         cookie_dismissed = await self._try_dismiss_cookies(page)

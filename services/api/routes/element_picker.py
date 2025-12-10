@@ -57,6 +57,7 @@ async def load_page_for_picker(request: PickerRequest):
 
     Used by the visual element picker to display a clickable overlay.
     """
+    global _picker_runtime
     try:
         runtime = await get_picker_runtime()
 
@@ -64,9 +65,18 @@ async def load_page_for_picker(request: PickerRequest):
         logger.info(f"Element picker: navigating to {request.url}")
         nav_result = await runtime.navigate(request.url)
         if not nav_result.get("success"):
+            error_msg = nav_result.get('error', 'Unknown error')
+            # If page crashed, reset the runtime for next attempt
+            if "crashed" in error_msg.lower():
+                logger.info("Resetting picker runtime due to page crash")
+                try:
+                    await runtime.close()
+                except:
+                    pass
+                _picker_runtime = None
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to navigate: {nav_result.get('error', 'Unknown error')}"
+                detail=f"Failed to navigate: {error_msg}"
             )
 
         # Wait for page to stabilize
@@ -97,7 +107,16 @@ async def load_page_for_picker(request: PickerRequest):
         raise
     except Exception as e:
         logger.exception(f"Element picker error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_str = str(e)
+        # Reset runtime on any crash-like error
+        if "crashed" in error_str.lower() or "closed" in error_str.lower():
+            try:
+                if _picker_runtime:
+                    await _picker_runtime.close()
+            except:
+                pass
+            _picker_runtime = None
+        raise HTTPException(status_code=500, detail=error_str)
 
 
 class ClickAndUpdateRequest(BaseModel):
