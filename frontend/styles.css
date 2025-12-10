@@ -194,7 +194,10 @@ body {
 
 /* ---- Input Area ---- */
 .input-area {
-    background: var(--bg-input);
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: var(--radius-2xl);
     padding: 0.75rem;
     margin-top: auto;
@@ -204,7 +207,7 @@ body {
     width: 100%;
     border: none;
     background: transparent;
-    color: var(--neutral-900);
+    color: var(--white);
     font-family: var(--font-sans);
     font-size: 0.875rem;
     line-height: 1.5;
@@ -229,7 +232,7 @@ body {
     align-items: center;
     margin-top: 0.5rem;
     padding-top: 0.5rem;
-    border-top: 1px solid var(--neutral-200);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .attach-btn {
