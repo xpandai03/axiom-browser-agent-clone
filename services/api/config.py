@@ -46,10 +46,32 @@ class APIConfig(BaseSettings):
     # Simulation mode (for testing without browser)
     use_simulation: bool = False
 
+    # Stealth Mode (free, helps with some detection)
+    stealth_mode: bool = True  # Default ON - applies playwright-stealth patches
+
+    # Proxy Configuration (user provides credentials via env vars)
+    proxy_enabled: bool = False
+    proxy_server: Optional[str] = None      # e.g., "http://proxy.example.com:8080"
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
+
     class Config:
         env_prefix = "API_"
         env_file = ".env"
         extra = "ignore"
+
+    @property
+    def proxy_config(self) -> Optional[dict]:
+        """Get Playwright proxy config dict."""
+        if not self.proxy_enabled or not self.proxy_server:
+            return None
+
+        config = {"server": self.proxy_server}
+        if self.proxy_username:
+            config["username"] = self.proxy_username
+        if self.proxy_password:
+            config["password"] = self.proxy_password
+        return config
 
     @property
     def openai_api_key(self) -> Optional[str]:

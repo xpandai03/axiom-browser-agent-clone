@@ -18,6 +18,7 @@ import asyncio
 import base64
 import logging
 import os
+import random
 from typing import Any, Dict, Optional
 from contextlib import asynccontextmanager
 
@@ -30,6 +31,17 @@ try:
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
     logger.warning("Playwright not available - using simulation mode")
+
+# Stealth mode imports - optional
+try:
+    from playwright_stealth import stealth_async
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
+    logger.warning("playwright-stealth not available - stealth mode disabled")
+
+# Import config for stealth/proxy settings
+from .config import get_config
 
 
 class PlaywrightRuntime:
@@ -46,6 +58,7 @@ class PlaywrightRuntime:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._headless = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
+        self._config = get_config()  # Load stealth/proxy config
 
     async def ensure_browser(self) -> Page:
         """Ensure browser is running and return the page."""
@@ -53,36 +66,66 @@ class PlaywrightRuntime:
             await self._start_browser()
         return self._page
 
+    async def _human_delay(self, min_ms: int = 100, max_ms: int = 500) -> None:
+        """Add random human-like delay between actions."""
+        delay = random.randint(min_ms, max_ms) / 1000
+        await asyncio.sleep(delay)
+
     async def _start_browser(self) -> None:
-        """Start the Playwright browser."""
+        """Start the Playwright browser with stealth and proxy support."""
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("Playwright is not installed")
 
-        logger.info(f"Starting Playwright browser (headless={self._headless})")
+        config = self._config
+        proxy_config = config.proxy_config
+
+        logger.info(f"Starting Playwright browser (headless={self._headless}, stealth={config.stealth_mode}, proxy={proxy_config is not None})")
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._headless,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-default-apps",
-                "--disable-sync",
-                "--no-first-run",
-                "--single-process",
-            ]
-        )
-        self._context = await self._browser.new_context(
-            viewport={"width": 1280, "height": 720}
-        )
-        self._page = await self._context.new_page()
-        self._page.set_default_timeout(30000)
 
+        # Browser launch args for stealth - hide automation markers
+        launch_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--no-first-run",
+            "--single-process",
+            "--disable-blink-features=AutomationControlled",  # Hide automation flag
+        ]
+
+        # Add proxy to browser launch if configured
+        launch_kwargs = {
+            "headless": self._headless,
+            "args": launch_args,
+        }
+        if proxy_config:
+            launch_kwargs["proxy"] = proxy_config
+            logger.info(f"Using proxy: {proxy_config['server']}")
+
+        self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+
+        # Context with realistic viewport and user agent
+        context_kwargs = {
+            "viewport": {"width": 1920, "height": 1080},  # Full HD more realistic
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
+        self._context = await self._browser.new_context(**context_kwargs)
+        self._page = await self._context.new_page()
+
+        # Apply stealth patches if available and enabled
+        if STEALTH_AVAILABLE and config.stealth_mode:
+            await stealth_async(self._page)
+            logger.info("Stealth mode applied - browser fingerprinting masked")
+
+        self._page.set_default_timeout(30000)
         logger.info("Browser started successfully")
 
     async def close(self) -> None:
@@ -199,6 +242,9 @@ class PlaywrightRuntime:
         """Click an element. If no selector provided, auto-detect clickable element."""
         page = await self.ensure_browser()
 
+        # Add human-like delay before clicking
+        await self._human_delay(100, 400)
+
         auto_selected = None
         if not selector:
             # Auto-detection logic: try common patterns
@@ -259,10 +305,16 @@ class PlaywrightRuntime:
         }
 
     async def type_text(self, selector: str, text: str) -> Dict[str, Any]:
-        """Type text keystroke by keystroke."""
+        """Type text keystroke by keystroke with human-like typing speed."""
         page = await self.ensure_browser()
         await page.wait_for_selector(selector, state="visible", timeout=10000)
-        await page.type(selector, text)
+
+        # Human-like delay before typing
+        await self._human_delay(50, 200)
+
+        # Type with human-like speed (random delay per character: 50-150ms)
+        typing_delay = random.randint(50, 120)
+        await page.type(selector, text, delay=typing_delay)
 
         return {
             "success": True,

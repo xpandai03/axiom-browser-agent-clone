@@ -1,21 +1,27 @@
 from fastapi import APIRouter
 from datetime import datetime
 
-from ..config import get_openai_api_key
+from ..config import get_openai_api_key, get_config
 
 router = APIRouter(prefix="/health", tags=["health"])
 
 
 @router.get("")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with stealth/proxy status."""
     key, source = get_openai_api_key()
+    config = get_config()
+
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "axiom-api",
         "openai_key_loaded": key is not None,
         "openai_env_source": source,
+        # Anti-bot bypass status
+        "stealth_mode": config.stealth_mode,
+        "proxy_enabled": config.proxy_enabled,
+        "proxy_server": config.proxy_server[:30] + "..." if config.proxy_server and len(config.proxy_server) > 30 else config.proxy_server,
     }
 
 
