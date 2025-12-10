@@ -17,70 +17,168 @@
                     <p class="brand-subtitle">Automate repetitive tasks on the web</p>
                 </div>
 
-                <!-- Suggestion Cards Grid -->
-                <div class="suggestion-cards">
-                    <button class="suggestion-card" data-workflow="greenhouse">
-                        <span class="card-title">Apply to jobs</span>
-                        <span class="card-subtitle">on Greenhouse automatically</span>
-                    </button>
-                    <button class="suggestion-card" data-workflow="extract">
-                        <span class="card-title">Extract job listings</span>
-                        <span class="card-subtitle">from company career pages</span>
-                    </button>
-                    <button class="suggestion-card" data-workflow="click">
-                        <span class="card-title">Navigate and click</span>
-                        <span class="card-subtitle">through job postings</span>
-                    </button>
-                    <button class="suggestion-card" data-workflow="test">
-                        <span class="card-title">Quick test</span>
-                        <span class="card-subtitle">screenshot any website</span>
-                    </button>
-                </div>
-
-                <!-- Chat Messages Area (future: assistant messages) -->
-                <div class="chat-messages" id="chat-messages"></div>
-
-                <!-- Input Area -->
-                <div class="input-area">
-                    <textarea
-                        id="instructions"
-                        placeholder="Describe your automation task..."
-                        rows="3"
-                    ></textarea>
-                    <div class="input-controls">
-                        <button class="attach-btn" id="attach-btn" title="Attach file">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-                            </svg>
-                        </button>
-                        <button class="send-btn" id="send-btn" title="Run workflow">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="m5 12 7-7 7 7"/>
-                                <path d="M12 19V5"/>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Collapsible User Data Panel -->
-                <details class="user-data-panel">
-                    <summary>
-                        <span class="summary-text">User Profile Data</span>
-                        <svg class="chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="m6 9 6 6 6-6"/>
+                <!-- Mode Tabs -->
+                <div class="mode-tabs">
+                    <button class="mode-tab active" data-mode="chat">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/>
                         </svg>
-                    </summary>
-                    <div class="user-data-fields">
-                        <div class="field-row">
-                            <input type="text" id="user-first-name" placeholder="First Name" class="user-field">
-                            <input type="text" id="user-last-name" placeholder="Last Name" class="user-field">
-                        </div>
-                        <input type="email" id="user-email" placeholder="Email" class="user-field">
-                        <input type="tel" id="user-phone" placeholder="Phone" class="user-field">
-                        <input type="text" id="user-location" placeholder="Location (City, State)" class="user-field">
-                        <input type="url" id="user-linkedin" placeholder="LinkedIn URL" class="user-field">
+                        Chat
+                    </button>
+                    <button class="mode-tab" data-mode="builder">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                        Builder
+                    </button>
+                </div>
+
+                <!-- CHAT MODE CONTENT -->
+                <div class="mode-content" id="chat-mode">
+                    <!-- Suggestion Cards Grid -->
+                    <div class="suggestion-cards">
+                        <button class="suggestion-card" data-workflow="greenhouse">
+                            <span class="card-title">Apply to jobs</span>
+                            <span class="card-subtitle">on Greenhouse automatically</span>
+                        </button>
+                        <button class="suggestion-card" data-workflow="extract">
+                            <span class="card-title">Extract job listings</span>
+                            <span class="card-subtitle">from company career pages</span>
+                        </button>
+                        <button class="suggestion-card" data-workflow="click">
+                            <span class="card-title">Navigate and click</span>
+                            <span class="card-subtitle">through job postings</span>
+                        </button>
+                        <button class="suggestion-card" data-workflow="test">
+                            <span class="card-title">Quick test</span>
+                            <span class="card-subtitle">screenshot any website</span>
+                        </button>
                     </div>
-                </details>
+
+                    <!-- Chat Messages Area (future: assistant messages) -->
+                    <div class="chat-messages" id="chat-messages"></div>
+
+                    <!-- Input Area -->
+                    <div class="input-area">
+                        <textarea
+                            id="instructions"
+                            placeholder="Describe your automation task..."
+                            rows="3"
+                        ></textarea>
+                        <div class="input-controls">
+                            <button class="attach-btn" id="attach-btn" title="Attach file">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                                </svg>
+                            </button>
+                            <button class="send-btn" id="send-btn" title="Run workflow">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m5 12 7-7 7 7"/>
+                                    <path d="M12 19V5"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Collapsible User Data Panel -->
+                    <details class="user-data-panel">
+                        <summary>
+                            <span class="summary-text">User Profile Data</span>
+                            <svg class="chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m6 9 6 6 6-6"/>
+                            </svg>
+                        </summary>
+                        <div class="user-data-fields">
+                            <div class="field-row">
+                                <input type="text" id="user-first-name" placeholder="First Name" class="user-field">
+                                <input type="text" id="user-last-name" placeholder="Last Name" class="user-field">
+                            </div>
+                            <input type="email" id="user-email" placeholder="Email" class="user-field">
+                            <input type="tel" id="user-phone" placeholder="Phone" class="user-field">
+                            <input type="text" id="user-location" placeholder="Location (City, State)" class="user-field">
+                            <input type="url" id="user-linkedin" placeholder="LinkedIn URL" class="user-field">
+                        </div>
+                    </details>
+                </div>
+
+                <!-- BUILDER MODE CONTENT -->
+                <div class="mode-content hidden" id="builder-mode">
+                    <!-- Builder Header -->
+                    <div class="builder-header">
+                        <h3 class="builder-title">Workflow Steps</h3>
+                        <button class="btn-ghost" id="preview-json-btn" title="Preview JSON">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <path d="M14 2v6h6"/>
+                                <path d="M16 13H8"/>
+                                <path d="M16 17H8"/>
+                                <path d="M10 9H8"/>
+                            </svg>
+                            JSON
+                        </button>
+                    </div>
+
+                    <!-- Steps List -->
+                    <div class="steps-list" id="steps-list">
+                        <div class="empty-steps" id="empty-steps">
+                            <div class="empty-steps-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 5v14"/>
+                                    <path d="M5 12h14"/>
+                                </svg>
+                            </div>
+                            <p class="empty-steps-text">No steps added yet</p>
+                            <p class="empty-steps-hint">Click "Add Step" to begin building your workflow</p>
+                        </div>
+                    </div>
+
+                    <!-- Add Step Button -->
+                    <button class="btn-primary add-step-btn" id="add-step-btn">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 5v14"/>
+                            <path d="M5 12h14"/>
+                        </svg>
+                        Add Step
+                    </button>
+
+                    <!-- Builder Actions -->
+                    <div class="builder-actions">
+                        <button class="btn-secondary" id="clear-workflow-btn">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M3 6h18"/>
+                                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                            </svg>
+                            Clear All
+                        </button>
+                        <button class="btn-primary" id="run-builder-btn">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="6 3 20 12 6 21 6 3"/>
+                            </svg>
+                            Run Workflow
+                        </button>
+                    </div>
+
+                    <!-- User Data Panel for Builder (reused) -->
+                    <details class="user-data-panel builder-user-data">
+                        <summary>
+                            <span class="summary-text">User Profile Data</span>
+                            <svg class="chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="m6 9 6 6 6-6"/>
+                            </svg>
+                        </summary>
+                        <div class="user-data-fields">
+                            <div class="field-row">
+                                <input type="text" id="builder-first-name" placeholder="First Name" class="user-field">
+                                <input type="text" id="builder-last-name" placeholder="Last Name" class="user-field">
+                            </div>
+                            <input type="email" id="builder-email" placeholder="Email" class="user-field">
+                            <input type="tel" id="builder-phone" placeholder="Phone" class="user-field">
+                            <input type="text" id="builder-location" placeholder="Location (City, State)" class="user-field">
+                            <input type="url" id="builder-linkedin" placeholder="LinkedIn URL" class="user-field">
+                        </div>
+                    </details>
+                </div>
 
                 <!-- Hidden file input for attach button -->
                 <input type="file" id="resume" accept=".txt,.md,.doc,.docx,.pdf" style="display: none;">
@@ -105,12 +203,120 @@
                     </div>
                     <h2 class="empty-title">Automation Timeline</h2>
                     <p class="empty-text">Select a workflow card or describe your task to begin.<br>Each step will appear here as it executes.</p>
+                    <button class="btn-primary empty-state-btn" id="open-builder-btn" style="margin-top: 1.5rem;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                        Build Workflow
+                    </button>
                 </div>
 
                 <!-- Timeline cards will be rendered here dynamically -->
             </div>
         </section>
     </main>
+
+    <!-- Step Picker Modal -->
+    <div class="modal-overlay hidden" id="step-picker-modal">
+        <div class="modal-backdrop" onclick="closeStepPicker()"></div>
+        <div class="modal-content step-picker">
+            <div class="modal-header">
+                <h3>Add Step</h3>
+                <button class="modal-close" id="close-step-picker" onclick="closeStepPicker()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6 6 18"/>
+                        <path d="m6 6 12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <input type="text" class="step-search" id="step-search" placeholder="Search steps...">
+
+            <div class="step-categories" id="step-categories">
+                <!-- Templates Section -->
+                <div class="category-section" id="templates-section">
+                    <h4 class="category-title">Quick Start Templates</h4>
+                    <div class="template-options" id="template-options">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Recommended Section -->
+                <div class="category-section">
+                    <h4 class="category-title">Recommended</h4>
+                    <div class="step-options" id="recommended-steps">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Navigate Category -->
+                <div class="category-section">
+                    <h4 class="category-title">Navigate</h4>
+                    <div class="step-options" data-category="Navigate">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Interact Category -->
+                <div class="category-section">
+                    <h4 class="category-title">Interact</h4>
+                    <div class="step-options" data-category="Interact">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Extract Category -->
+                <div class="category-section">
+                    <h4 class="category-title">Extract</h4>
+                    <div class="step-options" data-category="Extract">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Forms Category -->
+                <div class="category-section">
+                    <h4 class="category-title">Forms</h4>
+                    <div class="step-options" data-category="Forms">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Control Category -->
+                <div class="category-section">
+                    <h4 class="category-title">Control</h4>
+                    <div class="step-options" data-category="Control">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JSON Preview Modal -->
+    <div class="modal-overlay hidden" id="json-preview-modal">
+        <div class="modal-backdrop" onclick="closeJsonPreview()"></div>
+        <div class="modal-content json-preview">
+            <div class="modal-header">
+                <h3>Workflow JSON</h3>
+                <button class="modal-close" onclick="closeJsonPreview()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6 6 18"/>
+                        <path d="m6 6 12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <pre class="json-display" id="json-preview-content"></pre>
+            <div class="modal-actions">
+                <button class="btn-secondary" id="copy-json-btn" onclick="copyJsonToClipboard()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                    Copy JSON
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Screenshot Viewer Modal -->
     <div id="screenshot-viewer" class="screenshot-viewer">
