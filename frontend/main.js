@@ -1035,12 +1035,12 @@ Take a screenshot`,
             name: 'Scrape Reddit',
             description: 'Extract posts from a Reddit subreddit (uses proxy + stealth)',
             steps: [
-                { action: 'goto', url: 'https://reddit.com/r/artificial' },
+                { action: 'goto', url: 'https://old.reddit.com/r/artificial' },
                 { action: 'wait', duration: 2500 },
-                { action: 'detect_block', abort_on_block: true },
-                { action: 'scroll_until', scroll_condition: 'count', max_scrolls: 5, scroll_delay_ms: 1000 },
-                { action: 'extract_links', selector: 'a[href*="/comments/"]', label: 'post_links' },
-                { action: 'extract_text', selector: '[data-testid="post-title"], .title a', label: 'post_titles' },
+                { action: 'detect_block', abort_on_block: false },
+                { action: 'random_scroll', min_scrolls: 2, max_scrolls: 4 },
+                { action: 'extract_links', selector: 'a.title', filter_pattern: '/comments/', label: 'post_links' },
+                { action: 'extract_text', selector: 'a.title', label: 'post_titles' },
                 { action: 'screenshot' }
             ]
         },
