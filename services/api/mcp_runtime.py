@@ -32,13 +32,24 @@ except ImportError:
     PLAYWRIGHT_AVAILABLE = False
     logger.warning("Playwright not available - using simulation mode")
 
-# Stealth mode imports - optional
-try:
-    from playwright_stealth import stealth_async
-    STEALTH_AVAILABLE = True
-except ImportError:
-    STEALTH_AVAILABLE = False
-    logger.warning("playwright-stealth not available - stealth mode disabled")
+# Stealth mode - lazy import to avoid blocking startup
+# Will be imported on first browser launch
+STEALTH_AVAILABLE = None  # None = not yet checked, True/False = checked
+_stealth_async = None
+
+def _get_stealth_async():
+    """Lazy import playwright-stealth to avoid blocking app startup."""
+    global STEALTH_AVAILABLE, _stealth_async
+    if STEALTH_AVAILABLE is None:
+        try:
+            from playwright_stealth import stealth_async
+            _stealth_async = stealth_async
+            STEALTH_AVAILABLE = True
+            logger.info("playwright-stealth loaded successfully")
+        except ImportError:
+            STEALTH_AVAILABLE = False
+            logger.warning("playwright-stealth not available - stealth mode disabled")
+    return _stealth_async if STEALTH_AVAILABLE else None
 
 # Import config for stealth/proxy settings
 from .config import get_config
@@ -125,10 +136,12 @@ class PlaywrightRuntime:
         logger.info(f"Browser context created with viewport: {viewport_width}x{viewport_height}")
         self._page = await self._context.new_page()
 
-        # Apply stealth patches if available and enabled
-        if STEALTH_AVAILABLE and config.stealth_mode:
-            await stealth_async(self._page)
-            logger.info("Stealth mode applied - browser fingerprinting masked")
+        # Apply stealth patches if available and enabled (lazy load)
+        if config.stealth_mode:
+            stealth_func = _get_stealth_async()
+            if stealth_func:
+                await stealth_func(self._page)
+                logger.info("Stealth mode applied - browser fingerprinting masked")
 
         self._page.set_default_timeout(30000)
         logger.info("Browser started successfully")
