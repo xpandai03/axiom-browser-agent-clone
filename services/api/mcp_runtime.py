@@ -10,6 +10,7 @@ The runtime can operate in two modes:
 1. Native MCP mode: Tools called through Cursor's MCP protocol
 2. Direct Playwright mode: Fallback for standalone execution
 """
+from __future__ import annotations  # PEP 563: Postponed evaluation of annotations
 
 import asyncio
 import base64
