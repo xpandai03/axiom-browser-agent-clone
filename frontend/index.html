@@ -31,6 +31,14 @@
                         </svg>
                         Builder
                     </button>
+                    <button class="mode-tab" data-mode="history">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        History
+                        <span class="history-badge hidden" id="history-badge">0</span>
+                    </button>
                 </div>
 
                 <!-- CHAT MODE CONTENT -->
@@ -182,6 +190,105 @@
                             <input type="url" id="builder-linkedin" placeholder="LinkedIn URL" class="user-field">
                         </div>
                     </details>
+                </div>
+
+                <!-- HISTORY MODE CONTENT -->
+                <div class="mode-content hidden" id="history-mode">
+                    <!-- History List View -->
+                    <div class="history-view" id="history-list-view">
+                        <div class="history-header">
+                            <h3 class="history-title">Run History</h3>
+                            <button class="btn-ghost btn-sm" id="clear-history-btn" title="Clear all history">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M3 6h18"/>
+                                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                                </svg>
+                                Clear
+                            </button>
+                        </div>
+
+                        <!-- Empty History State -->
+                        <div class="history-empty" id="history-empty">
+                            <div class="history-empty-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <polyline points="12 6 12 12 16 14"/>
+                                </svg>
+                            </div>
+                            <p class="history-empty-text">No runs yet</p>
+                            <p class="history-empty-hint">Your completed workflow runs will appear here</p>
+                        </div>
+
+                        <!-- History Run List -->
+                        <div class="history-list" id="history-list">
+                            <!-- History items populated by JS -->
+                        </div>
+                    </div>
+
+                    <!-- History Detail View (hidden by default) -->
+                    <div class="history-view hidden" id="history-detail-view">
+                        <div class="history-detail-header">
+                            <button class="btn-ghost btn-sm history-back-btn" id="history-back-btn">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m15 18-6-6 6-6"/>
+                                </svg>
+                                Back
+                            </button>
+                            <div class="history-detail-actions">
+                                <button class="btn-ghost btn-sm" id="history-replay-btn" title="Replay this workflow">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polygon points="6 3 20 12 6 21 6 3"/>
+                                    </svg>
+                                    Replay
+                                </button>
+                                <button class="btn-ghost btn-sm" id="history-export-btn" title="Export as CSV">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                        <polyline points="7 10 12 15 17 10"/>
+                                        <line x1="12" y1="15" x2="12" y2="3"/>
+                                    </svg>
+                                    Export
+                                </button>
+                                <button class="btn-ghost btn-sm btn-danger" id="history-delete-btn" title="Delete this run">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M3 6h18"/>
+                                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Run Summary Card -->
+                        <div class="history-detail-summary" id="history-detail-summary">
+                            <!-- Populated by JS -->
+                        </div>
+
+                        <!-- Screenshots Gallery -->
+                        <div class="history-detail-section" id="history-screenshots-section">
+                            <h4 class="history-section-title">Screenshots</h4>
+                            <div class="history-screenshots-gallery" id="history-screenshots-gallery">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Extracted Data Section -->
+                        <div class="history-detail-section hidden" id="history-extracted-section">
+                            <h4 class="history-section-title">Extracted Data</h4>
+                            <div class="history-extracted-data" id="history-extracted-data">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Step Results Section -->
+                        <div class="history-detail-section" id="history-steps-section">
+                            <h4 class="history-section-title">Step Results</h4>
+                            <div class="history-steps-list" id="history-steps-list">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Hidden file input for attach button -->

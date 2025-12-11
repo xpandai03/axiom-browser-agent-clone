@@ -2252,3 +2252,441 @@ body {
     color: var(--neutral-500);
     text-transform: uppercase;
 }
+
+/* ============================================
+   RUN HISTORY STYLES
+   ============================================ */
+
+/* ---- History Badge in Tab ---- */
+.history-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 0.375rem;
+    background: var(--accent-cyan);
+    color: var(--neutral-950);
+    border-radius: 9px;
+    font-size: 0.625rem;
+    font-weight: 700;
+    margin-left: 0.375rem;
+}
+
+.history-badge.hidden {
+    display: none;
+}
+
+/* ---- History View Container ---- */
+.history-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.history-view.hidden {
+    display: none;
+}
+
+/* ---- History Header ---- */
+.history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    flex-shrink: 0;
+}
+
+.history-title {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--white);
+}
+
+/* ---- History Empty State ---- */
+.history-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1rem;
+    text-align: center;
+    flex: 1;
+}
+
+.history-empty.hidden {
+    display: none;
+}
+
+.history-empty-icon {
+    color: var(--neutral-600);
+    margin-bottom: 1rem;
+}
+
+.history-empty-text {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--neutral-400);
+    margin-bottom: 0.25rem;
+}
+
+.history-empty-hint {
+    font-size: 0.75rem;
+    color: var(--neutral-500);
+}
+
+/* ---- History List ---- */
+.history-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding-right: 0.25rem;
+}
+
+.history-list::-webkit-scrollbar {
+    width: 4px;
+}
+
+.history-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.history-list::-webkit-scrollbar-thumb {
+    background: var(--neutral-700);
+    border-radius: 2px;
+}
+
+/* ---- History Run Item ---- */
+.history-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: var(--neutral-800);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.history-item:hover {
+    background: var(--neutral-700);
+    border-color: var(--border-medium);
+}
+
+.history-item.success {
+    border-left: 3px solid var(--success);
+}
+
+.history-item.failed {
+    border-left: 3px solid var(--error);
+}
+
+.history-item-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.history-item.success .history-item-status {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.history-item.failed .history-item-status {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+.history-item-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+
+.history-item-name {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--white);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.history-item-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.6875rem;
+    color: var(--neutral-500);
+}
+
+.history-item-meta span {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.history-item-thumbnail {
+    width: 48px;
+    height: 36px;
+    border-radius: var(--radius-sm);
+    object-fit: cover;
+    border: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+}
+
+.history-item-chevron {
+    color: var(--neutral-500);
+    flex-shrink: 0;
+}
+
+/* ---- History Detail View ---- */
+.history-detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    flex-shrink: 0;
+}
+
+.history-back-btn {
+    gap: 0.25rem;
+}
+
+.history-detail-actions {
+    display: flex;
+    gap: 0.375rem;
+}
+
+.btn-sm {
+    padding: 0.375rem 0.5rem;
+    font-size: 0.75rem;
+}
+
+.btn-danger {
+    color: var(--error);
+}
+
+.btn-danger:hover {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+/* ---- History Detail Summary ---- */
+.history-detail-summary {
+    background: var(--neutral-800);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    margin-bottom: 1rem;
+    flex-shrink: 0;
+}
+
+.history-summary-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.history-summary-row:last-child {
+    margin-bottom: 0;
+}
+
+.history-summary-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.25rem 0.625rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.history-summary-status.success {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.history-summary-status.failed {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+.history-summary-name {
+    flex: 1;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--white);
+}
+
+.history-summary-meta {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    font-size: 0.75rem;
+    color: var(--neutral-400);
+}
+
+.history-summary-meta span {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.history-summary-url {
+    font-size: 0.75rem;
+    color: var(--neutral-500);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-summary-url a {
+    color: var(--accent-cyan);
+    text-decoration: none;
+}
+
+.history-summary-url a:hover {
+    text-decoration: underline;
+}
+
+/* ---- History Detail Sections ---- */
+.history-detail-section {
+    margin-bottom: 1rem;
+}
+
+.history-detail-section.hidden {
+    display: none;
+}
+
+.history-section-title {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--neutral-500);
+    margin-bottom: 0.625rem;
+}
+
+/* ---- History Screenshots Gallery ---- */
+.history-screenshots-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 0.5rem;
+}
+
+.history-screenshot-thumb {
+    aspect-ratio: 4/3;
+    border-radius: var(--radius-md);
+    object-fit: cover;
+    border: 1px solid var(--border-subtle);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.history-screenshot-thumb:hover {
+    border-color: var(--accent-cyan);
+    transform: scale(1.02);
+}
+
+.history-no-screenshots {
+    padding: 1rem;
+    text-align: center;
+    color: var(--neutral-500);
+    font-size: 0.8125rem;
+    background: var(--neutral-800);
+    border-radius: var(--radius-md);
+}
+
+/* ---- History Extracted Data ---- */
+.history-extracted-data {
+    background: var(--neutral-800);
+    border-radius: var(--radius-md);
+    padding: 0.75rem;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.history-extracted-data pre {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--neutral-300);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* ---- History Steps List ---- */
+.history-steps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.history-step-item {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--neutral-800);
+    border-radius: var(--radius-md);
+}
+
+.history-step-item.success {
+    border-left: 2px solid var(--success);
+}
+
+.history-step-item.failed {
+    border-left: 2px solid var(--error);
+}
+
+.history-step-number {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    background: var(--neutral-700);
+    border-radius: 50%;
+    font-size: 0.625rem;
+    font-weight: 700;
+    color: var(--neutral-300);
+    flex-shrink: 0;
+}
+
+.history-step-action {
+    flex: 1;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--white);
+}
+
+.history-step-status-icon {
+    flex-shrink: 0;
+}
+
+.history-step-status-icon.success {
+    color: var(--success);
+}
+
+.history-step-status-icon.failed {
+    color: var(--error);
+}
+
+.history-step-duration {
+    font-size: 0.6875rem;
+    font-family: var(--font-mono);
+    color: var(--neutral-500);
+}

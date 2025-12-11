@@ -155,6 +155,548 @@ Take a screenshot`,
     }
 
     // ============================================
+    // Run History Storage Layer
+    // ============================================
+    const HISTORY_KEY = 'axiom_run_history';
+    const HISTORY_VERSION = 1;
+    const DEFAULT_HISTORY_SETTINGS = {
+        maxRuns: 50,
+        maxScreenshotsPerRun: 3,
+        maxScreenshotSizeKB: 200
+    };
+
+    // Current run collector (reset on each workflow start)
+    let currentRunScreenshots = [];
+    let currentRunStepResults = [];
+    let currentRunExtractedData = null;
+    let currentRunCsvOutput = null;
+    let currentRunJobs = null;
+    let currentRunInstructions = '';
+    let currentRunUserData = {};
+    let currentRunParsedSteps = [];
+
+    function getHistoryStore() {
+        try {
+            const stored = localStorage.getItem(HISTORY_KEY);
+            if (stored) {
+                const data = JSON.parse(stored);
+                if (data.version === HISTORY_VERSION) {
+                    return data;
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to load history:', e);
+        }
+        return { version: HISTORY_VERSION, runs: [], settings: DEFAULT_HISTORY_SETTINGS };
+    }
+
+    function saveHistoryStore(store) {
+        try {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(store));
+            return true;
+        } catch (e) {
+            console.error('Failed to save history:', e);
+            if (e.name === 'QuotaExceededError') {
+                // Prune oldest runs and retry
+                store.runs = store.runs.slice(0, Math.floor(store.runs.length / 2));
+                try {
+                    localStorage.setItem(HISTORY_KEY, JSON.stringify(store));
+                    return true;
+                } catch (e2) {
+                    return false;
+                }
+            }
+            return false;
+        }
+    }
+
+    function generateRunId() {
+        return 'run_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
+    }
+
+    function addRunToHistory(runEntry) {
+        const store = getHistoryStore();
+        store.runs.unshift(runEntry);
+
+        // Prune if over limit
+        if (store.runs.length > store.settings.maxRuns) {
+            store.runs = store.runs.slice(0, store.settings.maxRuns);
+        }
+
+        const saved = saveHistoryStore(store);
+        if (saved) {
+            updateHistoryBadge();
+            renderHistoryList();
+        }
+        return saved;
+    }
+
+    function getRunHistory() {
+        return getHistoryStore().runs;
+    }
+
+    function getRunById(runId) {
+        return getHistoryStore().runs.find(r => r.id === runId);
+    }
+
+    function deleteRun(runId) {
+        const store = getHistoryStore();
+        store.runs = store.runs.filter(r => r.id !== runId);
+        const saved = saveHistoryStore(store);
+        if (saved) {
+            updateHistoryBadge();
+            renderHistoryList();
+        }
+        return saved;
+    }
+
+    function clearAllHistory() {
+        const store = getHistoryStore();
+        store.runs = [];
+        const saved = saveHistoryStore(store);
+        if (saved) {
+            updateHistoryBadge();
+            renderHistoryList();
+        }
+        return saved;
+    }
+
+    function resetCurrentRunCollectors() {
+        currentRunScreenshots = [];
+        currentRunStepResults = [];
+        currentRunExtractedData = null;
+        currentRunCsvOutput = null;
+        currentRunJobs = null;
+        currentRunInstructions = '';
+        currentRunUserData = {};
+        currentRunParsedSteps = [];
+    }
+
+    function assembleRunEntry(params) {
+        const store = getHistoryStore();
+        const settings = store.settings;
+
+        // Process screenshots - limit count
+        let screenshots = [];
+        if (params.screenshots && params.screenshots.length > 0) {
+            screenshots = params.screenshots.slice(0, settings.maxScreenshotsPerRun);
+        }
+
+        // Generate a name based on workflow content
+        let name = 'Workflow Run';
+        if (params.parsedSteps && params.parsedSteps.length > 0) {
+            const gotoStep = params.parsedSteps.find(s => s.action === 'goto' && s.url);
+            if (gotoStep) {
+                try {
+                    const url = new URL(gotoStep.url);
+                    name = url.hostname.replace('www.', '');
+                } catch (e) {
+                    name = truncateText(gotoStep.url, 30);
+                }
+            } else {
+                name = params.parsedSteps.map(s => s.action).slice(0, 3).join(' > ');
+            }
+        } else if (params.instructions) {
+            name = truncateText(params.instructions, 40);
+        }
+
+        return {
+            id: generateRunId(),
+            startedAt: params.startedAt || new Date().toISOString(),
+            timestamp: new Date().toISOString(),
+            name: name,
+            mode: params.mode,
+            status: params.success ? 'success' : 'failed',
+
+            instructions: params.instructions || null,
+            builderSteps: params.builderSteps || null,
+            userData: params.userData || {},
+
+            parsedSteps: params.parsedSteps || [],
+            stepResults: params.stepResults || [],
+            extractedData: params.extractedData || null,
+            csvOutput: params.csvOutput || null,
+            jobs: params.jobs || null,
+
+            screenshots: screenshots,
+            screenshotCount: params.screenshots ? params.screenshots.length : 0,
+
+            success: params.success,
+            error: params.error || null,
+            duration: params.durationMs || 0,
+            durationMs: params.durationMs || 0,
+            stepCount: params.stepResults ? params.stepResults.length : 0,
+            workflowId: params.workflowId || null
+        };
+    }
+
+    // Add a tracking variable for workflow start time
+    let currentRunStartTime = null;
+
+    function startRunTracking(instructions, userData, parsedSteps) {
+        resetCurrentRunCollectors();
+        currentRunStartTime = new Date();
+        currentRunInstructions = instructions || '';
+        currentRunUserData = userData || {};
+        currentRunParsedSteps = parsedSteps || [];
+    }
+
+    function collectStepResult(stepData) {
+        currentRunStepResults.push({
+            action: stepData.action,
+            status: stepData.status || (stepData.success !== false ? 'success' : 'failed'),
+            duration_ms: stepData.duration_ms
+        });
+
+        // Collect screenshot if present
+        if (stepData.screenshot) {
+            currentRunScreenshots.push('data:image/jpeg;base64,' + stepData.screenshot);
+        }
+
+        // Collect extracted data
+        if (stepData.extracted && !currentRunExtractedData) {
+            currentRunExtractedData = stepData.extracted;
+        }
+    }
+
+    function saveRunToHistory(success, durationMs, workflowId, jobs, csvOutput, error) {
+        const runEntry = assembleRunEntry({
+            mode: 'chat',
+            startedAt: currentRunStartTime ? currentRunStartTime.toISOString() : new Date().toISOString(),
+            instructions: currentRunInstructions,
+            userData: currentRunUserData,
+            parsedSteps: currentRunParsedSteps,
+            stepResults: currentRunStepResults,
+            screenshots: currentRunScreenshots,
+            extractedData: currentRunExtractedData,
+            jobs: jobs || currentRunJobs,
+            csvOutput: csvOutput || currentRunCsvOutput,
+            success: success,
+            error: error || null,
+            durationMs: durationMs || (currentRunStartTime ? Date.now() - currentRunStartTime.getTime() : 0),
+            workflowId: workflowId
+        });
+
+        addRunToHistory(runEntry);
+        updateHistoryBadge();
+        resetCurrentRunCollectors();
+        currentRunStartTime = null;
+    }
+
+    function formatRelativeTime(isoString) {
+        const date = new Date(isoString);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return date.toLocaleDateString();
+    }
+
+    function formatDuration(ms) {
+        if (!ms) return '0ms';
+        if (ms < 1000) return `${ms}ms`;
+        const seconds = Math.floor(ms / 1000);
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return `${minutes}m ${remainingSeconds}s`;
+    }
+
+    function truncateText(text, maxLength) {
+        if (!text) return '';
+        if (text.length <= maxLength) return text;
+        return text.substring(0, maxLength) + '...';
+    }
+
+    function convertToCsv(data) {
+        if (Array.isArray(data)) {
+            if (data.length === 0) return '';
+            if (typeof data[0] === 'string') {
+                return 'value\n' + data.map(v => `"${String(v).replace(/"/g, '""')}"`).join('\n');
+            }
+            if (typeof data[0] === 'object') {
+                const headers = Object.keys(data[0]);
+                const rows = data.map(obj =>
+                    headers.map(h => `"${String(obj[h] || '').replace(/"/g, '""')}"`).join(',')
+                );
+                return headers.join(',') + '\n' + rows.join('\n');
+            }
+        }
+        return JSON.stringify(data);
+    }
+
+    function exportRunAsCsv(runEntry) {
+        let csvContent = '';
+
+        if (runEntry.csvOutput) {
+            csvContent = runEntry.csvOutput;
+        } else if (runEntry.extractedData) {
+            csvContent = convertToCsv(runEntry.extractedData);
+        } else if (runEntry.jobs && runEntry.jobs.length > 0) {
+            csvContent = convertToCsv(runEntry.jobs);
+        }
+
+        if (!csvContent) {
+            showError('No data to export');
+            return false;
+        }
+
+        const blob = new Blob([csvContent], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `run-${runEntry.id}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return true;
+    }
+
+    // ============================================
+    // History UI Rendering Functions
+    // ============================================
+    let currentViewedRunId = null;
+
+    function updateHistoryBadge() {
+        const badge = document.getElementById('history-badge');
+        if (!badge) return;
+
+        const runs = getRunHistory();
+        if (runs.length > 0) {
+            badge.textContent = runs.length;
+            badge.classList.remove('hidden');
+        } else {
+            badge.classList.add('hidden');
+        }
+    }
+
+    function renderHistoryList() {
+        const historyList = document.getElementById('history-list');
+        const historyEmpty = document.getElementById('history-empty');
+        if (!historyList) return;
+
+        const runs = getRunHistory();
+
+        if (runs.length === 0) {
+            historyList.innerHTML = '';
+            if (historyEmpty) historyEmpty.classList.remove('hidden');
+            return;
+        }
+
+        if (historyEmpty) historyEmpty.classList.add('hidden');
+
+        historyList.innerHTML = runs.map(run => {
+            const statusClass = run.status === 'success' ? 'success' : 'failed';
+            const statusIcon = run.status === 'success'
+                ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+                : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+
+            const thumbnail = run.screenshots && run.screenshots.length > 0
+                ? `<img src="${run.screenshots[0]}" class="history-item-thumbnail" alt="Screenshot">`
+                : '';
+
+            const relativeTime = formatRelativeTime(run.startedAt);
+            const duration = run.duration ? formatDuration(run.duration) : '';
+            const stepsCount = run.stepResults ? run.stepResults.length : 0;
+
+            return `
+                <div class="history-item ${statusClass}" data-run-id="${run.id}" onclick="window.showHistoryDetail('${run.id}')">
+                    <div class="history-item-status">${statusIcon}</div>
+                    <div class="history-item-info">
+                        <span class="history-item-name">${escapeHtml(run.name || 'Workflow Run')}</span>
+                        <div class="history-item-meta">
+                            <span>${relativeTime}</span>
+                            ${duration ? `<span>${duration}</span>` : ''}
+                            <span>${stepsCount} steps</span>
+                        </div>
+                    </div>
+                    ${thumbnail}
+                    <svg class="history-item-chevron" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function showHistoryDetail(runId) {
+        const run = getRunById(runId);
+        if (!run) {
+            showError('Run not found');
+            return;
+        }
+
+        currentViewedRunId = runId;
+
+        const listView = document.getElementById('history-list-view');
+        const detailView = document.getElementById('history-detail-view');
+        if (!listView || !detailView) return;
+
+        listView.classList.add('hidden');
+        detailView.classList.remove('hidden');
+
+        renderHistoryDetailContent(run);
+    }
+
+    function hideHistoryDetail() {
+        currentViewedRunId = null;
+
+        const listView = document.getElementById('history-list-view');
+        const detailView = document.getElementById('history-detail-view');
+        if (!listView || !detailView) return;
+
+        detailView.classList.add('hidden');
+        listView.classList.remove('hidden');
+    }
+
+    function renderHistoryDetailContent(run) {
+        // Summary section
+        const summaryEl = document.getElementById('history-detail-summary');
+        if (summaryEl) {
+            const statusClass = run.status === 'success' ? 'success' : 'failed';
+            const statusText = run.status === 'success' ? 'Completed' : 'Failed';
+            const relativeTime = formatRelativeTime(run.startedAt);
+            const duration = run.duration ? formatDuration(run.duration) : 'N/A';
+            const stepsCount = run.stepResults ? run.stepResults.length : 0;
+
+            // Try to get first URL from steps
+            let firstUrl = '';
+            if (run.parsedSteps) {
+                const gotoStep = run.parsedSteps.find(s => s.action === 'goto' && s.url);
+                if (gotoStep) firstUrl = gotoStep.url;
+            }
+
+            summaryEl.innerHTML = `
+                <div class="history-summary-row">
+                    <span class="history-summary-status ${statusClass}">${statusText}</span>
+                    <span class="history-summary-name">${escapeHtml(run.name || 'Workflow Run')}</span>
+                </div>
+                <div class="history-summary-meta">
+                    <span>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        ${relativeTime}
+                    </span>
+                    <span>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                        ${duration}
+                    </span>
+                    <span>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4"/><path d="M12 18v4"/><path d="m4.93 4.93 2.83 2.83"/><path d="m16.24 16.24 2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="m4.93 19.07 2.83-2.83"/><path d="m16.24 7.76 2.83-2.83"/></svg>
+                        ${stepsCount} steps
+                    </span>
+                </div>
+                ${firstUrl ? `<div class="history-summary-url"><a href="${escapeHtml(firstUrl)}" target="_blank">${escapeHtml(truncateText(firstUrl, 50))}</a></div>` : ''}
+            `;
+        }
+
+        // Screenshots section
+        const screenshotsGallery = document.getElementById('history-screenshots-gallery');
+        const screenshotsSection = document.getElementById('history-screenshots-section');
+        if (screenshotsGallery && screenshotsSection) {
+            if (run.screenshots && run.screenshots.length > 0) {
+                screenshotsSection.classList.remove('hidden');
+                screenshotsGallery.innerHTML = run.screenshots.map((src, idx) =>
+                    `<img src="${src}" class="history-screenshot-thumb" alt="Screenshot ${idx + 1}" onclick="openScreenshotViewer('${src}', 'Screenshot ${idx + 1}')">`
+                ).join('');
+            } else {
+                screenshotsGallery.innerHTML = '<div class="history-no-screenshots">No screenshots captured</div>';
+            }
+        }
+
+        // Extracted Data section
+        const extractedSection = document.getElementById('history-extracted-section');
+        const extractedData = document.getElementById('history-extracted-data');
+        if (extractedSection && extractedData) {
+            if (run.extractedData || run.jobs) {
+                extractedSection.classList.remove('hidden');
+                const data = run.extractedData || run.jobs;
+                extractedData.innerHTML = `<pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+            } else {
+                extractedSection.classList.add('hidden');
+            }
+        }
+
+        // Step Results section
+        const stepsListEl = document.getElementById('history-steps-list');
+        if (stepsListEl) {
+            if (run.stepResults && run.stepResults.length > 0) {
+                stepsListEl.innerHTML = run.stepResults.map((step, idx) => {
+                    const statusClass = step.status === 'success' ? 'success' : 'failed';
+                    const statusIcon = step.status === 'success'
+                        ? '<svg class="history-step-status-icon success" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>'
+                        : '<svg class="history-step-status-icon failed" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+                    const duration = step.duration_ms ? `${step.duration_ms}ms` : '';
+
+                    return `
+                        <div class="history-step-item ${statusClass}">
+                            <span class="history-step-number">${idx + 1}</span>
+                            <span class="history-step-action">${escapeHtml(step.action || 'Unknown')}</span>
+                            ${duration ? `<span class="history-step-duration">${duration}</span>` : ''}
+                            ${statusIcon}
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                stepsListEl.innerHTML = '<div class="history-no-screenshots">No step results recorded</div>';
+            }
+        }
+    }
+
+    function replayHistoryRun(runId) {
+        const run = getRunById(runId);
+        if (!run || !run.parsedSteps || run.parsedSteps.length === 0) {
+            showError('Cannot replay - workflow data not available');
+            return;
+        }
+
+        // Switch to builder mode and load the steps
+        hideHistoryDetail();
+        switchMode('builder');
+
+        // Load steps into builder (function is defined later, but hoisted)
+        setTimeout(() => {
+            // Deep copy steps
+            builderSteps = run.parsedSteps.map(step => JSON.parse(JSON.stringify(step)));
+            expandedStepIndex = 0;
+            saveBuilderState();
+            renderStepsList();
+        }, 100);
+    }
+
+    function deleteHistoryRun(runId) {
+        if (!confirm('Delete this run from history?')) return;
+
+        deleteRun(runId);
+        hideHistoryDetail();
+        renderHistoryList();
+        updateHistoryBadge();
+    }
+
+    function handleClearAllHistory() {
+        if (!confirm('Clear all run history? This cannot be undone.')) return;
+
+        clearAllHistory();
+        renderHistoryList();
+        updateHistoryBadge();
+    }
+
+    // Expose to window for onclick handlers
+    window.showHistoryDetail = showHistoryDetail;
+    window.hideHistoryDetail = hideHistoryDetail;
+    window.replayHistoryRun = replayHistoryRun;
+    window.deleteHistoryRun = deleteHistoryRun;
+    window.handleClearAllHistory = handleClearAllHistory;
+    window.exportRunAsCsv = function(runId) {
+        const run = getRunById(runId);
+        if (run) exportRunAsCsv(run);
+    };
+
+    // ============================================
     // Timeline Rendering Functions
     // ============================================
     function clearTimeline() {
@@ -450,6 +992,9 @@ Take a screenshot`,
         let workflowId = null;
         let stepCount = 0;
 
+        // Start history tracking
+        startRunTracking(instructions, userData, null);
+
         // Handle status messages
         eventSource.addEventListener('status', (event) => {
             const data = JSON.parse(event.data);
@@ -464,6 +1009,9 @@ Take a screenshot`,
 
             workflowId = data.workflow_id;
             stepCount = data.count;
+
+            // Update history tracking with parsed steps
+            currentRunParsedSteps = data.steps || [];
 
             // Remove loading card and show parsed workflow
             removeTimelineLoading();
@@ -487,6 +1035,9 @@ Take a screenshot`,
             // Remove the running card
             removeStepRunningCard(data.step_number);
 
+            // Collect step result for history
+            collectStepResult(data);
+
             // Render the completed step
             renderStepExecution(data, data.step_number);
             renderScreenshot(data, data.step_number);
@@ -496,6 +1047,16 @@ Take a screenshot`,
         eventSource.addEventListener('workflow_complete', (event) => {
             const data = JSON.parse(event.data);
             console.log('[SSE] Workflow complete:', data);
+
+            // Save to history
+            saveRunToHistory(
+                data.success,
+                data.total_duration_ms,
+                data.workflow_id,
+                null, // jobs
+                null, // csvOutput
+                data.success ? null : 'Workflow failed'
+            );
 
             // Render final status
             renderFinalStatus({
@@ -518,6 +1079,16 @@ Take a screenshot`,
                 const data = JSON.parse(event.data);
                 console.error('[SSE] Error event:', data);
                 showError('Workflow error: ' + data.error);
+
+                // Save failed run to history
+                saveRunToHistory(
+                    false,
+                    null,
+                    workflowId,
+                    null,
+                    null,
+                    data.error || 'Unknown error'
+                );
             }
         });
 
@@ -530,6 +1101,16 @@ Take a screenshot`,
                 removeTimelineLoading();
                 showError('Connection lost. Please try again.');
                 setWorkflowState(WorkflowState.FAILED);
+
+                // Save failed run to history
+                saveRunToHistory(
+                    false,
+                    null,
+                    workflowId,
+                    null,
+                    null,
+                    'Connection lost'
+                );
             }
 
             eventSource.close();
@@ -1114,6 +1695,8 @@ Take a screenshot`,
     // ============================================
     // Mode Switching
     // ============================================
+    const historyMode = document.getElementById('history-mode');
+
     function switchMode(mode) {
         currentMode = mode;
 
@@ -1121,13 +1704,24 @@ Take a screenshot`,
             tab.classList.toggle('active', tab.dataset.mode === mode);
         });
 
+        // Hide all mode contents first
+        chatMode.classList.add('hidden');
+        builderMode.classList.add('hidden');
+        if (historyMode) historyMode.classList.add('hidden');
+
+        // Show the selected mode
         if (mode === 'chat') {
             chatMode.classList.remove('hidden');
-            builderMode.classList.add('hidden');
-        } else {
-            chatMode.classList.add('hidden');
+        } else if (mode === 'builder') {
             builderMode.classList.remove('hidden');
             renderStepsList();
+        } else if (mode === 'history') {
+            if (historyMode) {
+                historyMode.classList.remove('hidden');
+                renderHistoryList();
+                // Reset to list view when entering history mode
+                hideHistoryDetail();
+            }
         }
     }
 
@@ -1276,6 +1870,24 @@ Take a screenshot`,
 
         // Deep copy template steps
         builderSteps = template.steps.map(step => JSON.parse(JSON.stringify(step)));
+        expandedStepIndex = 0;
+        saveBuilderState();
+        renderStepsList();
+    }
+
+    // Load workflow steps directly (used by history replay)
+    function loadWorkflowIntoBuilder(steps) {
+        if (!steps || steps.length === 0) return;
+
+        // Confirm if there are existing steps
+        if (builderSteps.length > 0) {
+            if (!confirm(`This will replace your ${builderSteps.length} existing steps. Continue?`)) {
+                return;
+            }
+        }
+
+        // Deep copy steps
+        builderSteps = steps.map(step => JSON.parse(JSON.stringify(step)));
         expandedStepIndex = 0;
         saveBuilderState();
         renderStepsList();
@@ -1973,6 +2585,9 @@ Take a screenshot`,
         hideError();
         showTimelineLoading();
 
+        // Start history tracking for builder mode
+        const runStartTime = new Date();
+
         // Disable builder controls
         if (runBuilderBtn) runBuilderBtn.disabled = true;
         if (addStepBtn) addStepBtn.disabled = true;
@@ -1997,16 +2612,49 @@ Take a screenshot`,
             // Render parsed workflow (what we sent)
             renderWorkflowParsed(steps);
 
+            // Collect step results and screenshots for history
+            const stepResults = [];
+            const screenshots = [];
+
             // Render each step result
             (data.steps || []).forEach((step, index) => {
                 renderStepExecution(step, index);
                 renderScreenshot(step, index);
+
+                // Collect for history
+                stepResults.push({
+                    action: step.action,
+                    status: step.status || (step.success !== false ? 'success' : 'failed'),
+                    duration_ms: step.duration_ms
+                });
+                if (step.screenshot) {
+                    screenshots.push('data:image/jpeg;base64,' + step.screenshot);
+                }
             });
 
             // Render multi-job results if present
             if (data.jobs && data.jobs.length > 0) {
                 renderJobsSection(data.jobs, data.csv_output);
             }
+
+            // Save to history
+            const runEntry = assembleRunEntry({
+                mode: 'builder',
+                startedAt: runStartTime.toISOString(),
+                builderSteps: steps,
+                userData: userData,
+                parsedSteps: steps,
+                stepResults: stepResults,
+                screenshots: screenshots,
+                extractedData: data.extracted || null,
+                jobs: data.jobs || null,
+                csvOutput: data.csv_output || null,
+                success: data.success !== false,
+                durationMs: data.total_duration_ms || (Date.now() - runStartTime.getTime()),
+                workflowId: data.workflow_id
+            });
+            addRunToHistory(runEntry);
+            updateHistoryBadge();
 
             // Render final status
             renderFinalStatus(data);
@@ -2017,6 +2665,23 @@ Take a screenshot`,
             removeTimelineLoading();
             showError(error.message || 'Workflow execution failed');
             setWorkflowState(WorkflowState.FAILED);
+
+            // Save failed run to history
+            const runEntry = assembleRunEntry({
+                mode: 'builder',
+                startedAt: runStartTime.toISOString(),
+                builderSteps: steps,
+                userData: userData,
+                parsedSteps: steps,
+                stepResults: [],
+                screenshots: [],
+                success: false,
+                error: error.message || 'Workflow execution failed',
+                durationMs: Date.now() - runStartTime.getTime()
+            });
+            addRunToHistory(runEntry);
+            updateHistoryBadge();
+
         } finally {
             // Re-enable builder controls
             if (runBuilderBtn) runBuilderBtn.disabled = false;
@@ -2340,4 +3005,45 @@ Take a screenshot`,
             closeElementPicker();
         }
     });
+
+    // ============================================
+    // History Button Event Listeners
+    // ============================================
+    const clearHistoryBtn = document.getElementById('clear-history-btn');
+    const historyBackBtn = document.getElementById('history-back-btn');
+    const historyReplayBtn = document.getElementById('history-replay-btn');
+    const historyExportBtn = document.getElementById('history-export-btn');
+    const historyDeleteBtn = document.getElementById('history-delete-btn');
+
+    if (clearHistoryBtn) {
+        clearHistoryBtn.addEventListener('click', handleClearAllHistory);
+    }
+
+    if (historyBackBtn) {
+        historyBackBtn.addEventListener('click', hideHistoryDetail);
+    }
+
+    if (historyReplayBtn) {
+        historyReplayBtn.addEventListener('click', () => {
+            if (currentViewedRunId) replayHistoryRun(currentViewedRunId);
+        });
+    }
+
+    if (historyExportBtn) {
+        historyExportBtn.addEventListener('click', () => {
+            if (currentViewedRunId) {
+                const run = getRunById(currentViewedRunId);
+                if (run) exportRunAsCsv(run);
+            }
+        });
+    }
+
+    if (historyDeleteBtn) {
+        historyDeleteBtn.addEventListener('click', () => {
+            if (currentViewedRunId) deleteHistoryRun(currentViewedRunId);
+        });
+    }
+
+    // Initialize history badge on page load
+    updateHistoryBadge();
 });
