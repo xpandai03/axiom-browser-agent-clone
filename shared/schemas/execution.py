@@ -1,4 +1,4 @@
-from typing import Optional, List, Literal, Union
+from typing import Optional, List, Literal, Union, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
@@ -38,8 +38,8 @@ class StepResult(BaseModel):
     logs: List[str] = Field(default_factory=list, description="Log messages during execution")
     error: Optional[str] = Field(None, description="Error message if step failed")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="When step completed")
-    # Extract action result field
-    extracted_data: Optional[Union[List[str], str]] = Field(None, description="Data extracted from page (for extract action)")
+    # Extract action result field (supports list, str, or dict for Phase 7 actions)
+    extracted_data: Optional[Union[List[str], str, Dict[str, Any]]] = Field(None, description="Data extracted from page (for extract/extract_links/extract_text actions)")
     # Fill form action result field
     fields_filled: Optional[List[FieldFillResult]] = Field(None, description="Details of form fields that were filled")
 

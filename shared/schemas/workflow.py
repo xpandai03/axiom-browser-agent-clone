@@ -6,11 +6,17 @@ import re
 ActionType = Literal[
     "goto", "click", "type", "upload", "wait", "scroll",
     "extract", "screenshot", "fill_form", "click_first_job",
-    "extract_job_links", "loop_jobs"  # Multi-job scraping actions
+    "extract_job_links", "loop_jobs",  # Multi-job scraping actions
+    # Phase 7: Hard-Site Scraping actions
+    "extract_links", "extract_text", "extract_attributes",
+    "scroll_until", "random_scroll", "detect_block",
+    "wait_for_selector", "loop_urls"
 ]
 ApplyMode = Literal["greenhouse_basic"]
 ExtractMode = Literal["text", "attribute"]
 ScrollMode = Literal["pixels", "to_element", "until_text"]
+ScrollUntilCondition = Literal["selector_visible", "end_of_page", "count"]
+WaitForState = Literal["visible", "attached", "hidden"]
 
 
 class WorkflowStep(BaseModel):
@@ -37,6 +43,42 @@ class WorkflowStep(BaseModel):
     # Multi-job scraping fields (for loop_jobs action)
     max_jobs: Optional[int] = Field(None, ge=1, le=50, description="Max jobs to process (for loop_jobs)")
     job_url_source: Optional[str] = Field(None, description="Label of extracted job URLs to iterate (for loop_jobs)")
+
+    # Phase 7: Hard-Site Scraping fields
+    # extract_links fields
+    filter_pattern: Optional[str] = Field(None, description="Regex pattern to filter URLs (for extract_links)")
+    include_text: bool = Field(True, description="Include link text alongside href (for extract_links)")
+
+    # extract_text fields
+    clean_whitespace: bool = Field(True, description="Collapse whitespace in extracted text")
+    max_length: Optional[int] = Field(None, ge=1, description="Truncate extracted text to N chars")
+
+    # extract_attributes fields
+    attributes: Optional[List[str]] = Field(None, description="List of attributes to extract (for extract_attributes)")
+
+    # scroll_until fields
+    scroll_condition: ScrollUntilCondition = Field("count", description="Scroll until condition: selector_visible, end_of_page, or count")
+    max_scrolls: Optional[int] = Field(20, ge=1, le=100, description="Max scroll iterations (safety limit)")
+    scroll_delay_ms: Optional[int] = Field(None, ge=100, description="Delay between scrolls in ms")
+
+    # random_scroll fields
+    min_scrolls: Optional[int] = Field(2, ge=1, description="Min scroll actions (for random_scroll)")
+    max_delay_ms: Optional[int] = Field(1200, ge=100, description="Max delay between scrolls in ms")
+    min_delay_ms: Optional[int] = Field(300, ge=50, description="Min delay between scrolls in ms")
+
+    # detect_block fields
+    abort_on_block: bool = Field(False, description="Abort workflow if bot block detected")
+
+    # wait_for_selector fields
+    fallback_selectors: Optional[List[str]] = Field(None, description="Fallback selectors if primary fails")
+    timeout_ms: Optional[int] = Field(10000, ge=1000, description="Timeout per selector in ms")
+    wait_state: WaitForState = Field("visible", description="State to wait for: visible, attached, hidden")
+
+    # loop_urls fields
+    source: Optional[str] = Field(None, description="Label of extracted URLs to iterate (for loop_urls)")
+    max_items: Optional[int] = Field(10, ge=1, le=100, description="Max URLs to process (for loop_urls)")
+    delay_between_ms: Optional[int] = Field(2000, ge=500, description="Delay between URL visits in ms")
+    extract_fields: Optional[List[Dict[str, str]]] = Field(None, description="Fields to extract from each page (for loop_urls)")
 
     def interpolate(self, user_data: Dict[str, str]) -> "WorkflowStep":
         """Replace {{user.x}} placeholders with actual values from user_data."""
@@ -76,6 +118,26 @@ class WorkflowStep(BaseModel):
             # Multi-job scraping fields
             max_jobs=self.max_jobs,
             job_url_source=self.job_url_source,
+            # Phase 7: Hard-Site Scraping fields
+            filter_pattern=self.filter_pattern,
+            include_text=self.include_text,
+            clean_whitespace=self.clean_whitespace,
+            max_length=self.max_length,
+            attributes=self.attributes,
+            scroll_condition=self.scroll_condition,
+            max_scrolls=self.max_scrolls,
+            scroll_delay_ms=self.scroll_delay_ms,
+            min_scrolls=self.min_scrolls,
+            max_delay_ms=self.max_delay_ms,
+            min_delay_ms=self.min_delay_ms,
+            abort_on_block=self.abort_on_block,
+            fallback_selectors=self.fallback_selectors,
+            timeout_ms=self.timeout_ms,
+            wait_state=self.wait_state,
+            source=self.source,
+            max_items=self.max_items,
+            delay_between_ms=self.delay_between_ms,
+            extract_fields=self.extract_fields,
         )
 
 

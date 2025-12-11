@@ -110,14 +110,19 @@ class PlaywrightRuntime:
 
         self._browser = await self._playwright.chromium.launch(**launch_kwargs)
 
+        # Phase 7: Viewport jitter for stealth (randomize dimensions slightly)
+        viewport_width = 1920 + random.randint(-50, 50)
+        viewport_height = 1080 + random.randint(-30, 30)
+
         # Context with realistic viewport and user agent
         context_kwargs = {
-            "viewport": {"width": 1920, "height": 1080},  # Full HD more realistic
+            "viewport": {"width": viewport_width, "height": viewport_height},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "locale": "en-US",
             "timezone_id": "America/New_York",
         }
         self._context = await self._browser.new_context(**context_kwargs)
+        logger.info(f"Browser context created with viewport: {viewport_width}x{viewport_height}")
         self._page = await self._context.new_page()
 
         # Apply stealth patches if available and enabled
@@ -148,6 +153,23 @@ class PlaywrightRuntime:
     async def navigate(self, url: str) -> Dict[str, Any]:
         """Navigate to a URL and auto-dismiss cookie banners."""
         page = await self.ensure_browser()
+
+        # Phase 7: Set realistic referrer for stealth
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc
+
+            # Set referrer as if coming from Google search
+            referrer_headers = {
+                "Referer": f"https://www.google.com/search?q={domain}"
+            }
+            await page.set_extra_http_headers(referrer_headers)
+        except Exception as e:
+            logger.debug(f"Could not set referrer header: {e}")
+
+        # Add small random delay before navigation (human-like)
+        await asyncio.sleep(random.uniform(0.3, 0.8))
 
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -714,6 +736,377 @@ class PlaywrightRuntime:
                 "extracted_data": None
             }
 
+    # ==========================================
+    # Phase 7: Hard-Site Scraping Methods
+    # ==========================================
+
+    async def extract_links(
+        self,
+        selector: str,
+        filter_pattern: str = None,
+        include_text: bool = True
+    ) -> Dict[str, Any]:
+        """Extract all links matching selector with optional URL filtering."""
+        import re
+        page = await self.ensure_browser()
+
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+
+            if count == 0:
+                return {
+                    "success": False,
+                    "error": f"No elements found for selector: {selector}",
+                    "extracted_data": None
+                }
+
+            links = []
+            urls = []
+            base_url = page.url
+
+            for i in range(count):
+                el = locator.nth(i)
+                href = await el.get_attribute("href")
+
+                if not href:
+                    continue
+
+                # Convert relative URLs to absolute
+                if href.startswith("/"):
+                    from urllib.parse import urljoin
+                    href = urljoin(base_url, href)
+                elif not href.startswith(("http://", "https://")):
+                    from urllib.parse import urljoin
+                    href = urljoin(base_url, href)
+
+                # Apply filter pattern if provided
+                if filter_pattern:
+                    if not re.search(filter_pattern, href):
+                        continue
+
+                # Deduplicate
+                if href in urls:
+                    continue
+
+                urls.append(href)
+
+                if include_text:
+                    text = await el.inner_text()
+                    links.append({"href": href, "text": text.strip()})
+                else:
+                    links.append({"href": href})
+
+            return {
+                "success": True,
+                "content": f"Extracted {len(urls)} links from {count} elements",
+                "extracted_data": {"urls": urls, "links": links}
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"extract_links failed: {str(e)}",
+                "extracted_data": None
+            }
+
+    async def extract_text(
+        self,
+        selector: str,
+        clean_whitespace: bool = True,
+        max_length: int = None
+    ) -> Dict[str, Any]:
+        """Extract text content with optional cleaning and truncation."""
+        import re
+        page = await self.ensure_browser()
+
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+
+            if count == 0:
+                return {
+                    "success": False,
+                    "error": f"No elements found for selector: {selector}",
+                    "extracted_data": None
+                }
+
+            extracted = []
+            for i in range(count):
+                text = await locator.nth(i).inner_text()
+
+                if clean_whitespace:
+                    # Collapse multiple whitespace chars to single space
+                    text = re.sub(r'\s+', ' ', text).strip()
+
+                if max_length and len(text) > max_length:
+                    text = text[:max_length] + "..."
+
+                if text:
+                    extracted.append(text)
+
+            return {
+                "success": True,
+                "content": f"Extracted text from {len(extracted)} elements",
+                "extracted_data": extracted
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"extract_text failed: {str(e)}",
+                "extracted_data": None
+            }
+
+    async def extract_attributes(
+        self,
+        selector: str,
+        attributes: List[str]
+    ) -> Dict[str, Any]:
+        """Extract multiple attributes from elements."""
+        page = await self.ensure_browser()
+
+        try:
+            locator = page.locator(selector)
+            count = await locator.count()
+
+            if count == 0:
+                return {
+                    "success": False,
+                    "error": f"No elements found for selector: {selector}",
+                    "extracted_data": None
+                }
+
+            extracted = []
+            for i in range(count):
+                el = locator.nth(i)
+                attrs = {}
+                for attr in attributes:
+                    val = await el.get_attribute(attr)
+                    attrs[attr] = val
+                extracted.append(attrs)
+
+            return {
+                "success": True,
+                "content": f"Extracted {len(attributes)} attributes from {len(extracted)} elements",
+                "extracted_data": extracted
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"extract_attributes failed: {str(e)}",
+                "extracted_data": None
+            }
+
+    async def scroll_until(
+        self,
+        condition: str = "count",
+        selector: str = None,
+        max_scrolls: int = 20,
+        scroll_delay_ms: int = None
+    ) -> Dict[str, Any]:
+        """Scroll until a condition is met (selector_visible, end_of_page, count)."""
+        page = await self.ensure_browser()
+
+        scrolls_done = 0
+        last_height = 0
+
+        try:
+            for i in range(max_scrolls):
+                # Jittered delay between scrolls
+                delay_ms = scroll_delay_ms or random.randint(500, 1500)
+                await asyncio.sleep(delay_ms / 1000)
+
+                if condition == "selector_visible":
+                    if selector:
+                        try:
+                            is_visible = await page.locator(selector).is_visible()
+                            if is_visible:
+                                return {
+                                    "success": True,
+                                    "content": f"Selector visible after {i+1} scrolls",
+                                    "scrolls_done": i + 1
+                                }
+                        except:
+                            pass
+
+                elif condition == "end_of_page":
+                    current_height = await page.evaluate("document.body.scrollHeight")
+                    if current_height == last_height:
+                        return {
+                            "success": True,
+                            "content": f"Reached end of page after {i+1} scrolls",
+                            "scrolls_done": i + 1
+                        }
+                    last_height = current_height
+
+                # Perform scroll with random amount
+                scroll_amount = random.randint(400, 700)
+                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                scrolls_done = i + 1
+
+            return {
+                "success": True,
+                "content": f"Completed {scrolls_done} scrolls (max reached)",
+                "scrolls_done": scrolls_done
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"scroll_until failed: {str(e)}",
+                "scrolls_done": scrolls_done
+            }
+
+    async def random_scroll(
+        self,
+        min_scrolls: int = 2,
+        max_scrolls: int = 5,
+        min_delay_ms: int = 300,
+        max_delay_ms: int = 1200,
+        direction: str = "down"
+    ) -> Dict[str, Any]:
+        """Human-like scrolling with randomized amounts and timing."""
+        page = await self.ensure_browser()
+
+        num_scrolls = random.randint(min_scrolls, max_scrolls)
+        scrolls_done = 0
+
+        try:
+            for i in range(num_scrolls):
+                # Random delay before scroll
+                delay = random.randint(min_delay_ms, max_delay_ms) / 1000
+                await asyncio.sleep(delay)
+
+                # Random scroll amount
+                amount = random.randint(200, 600)
+
+                # Direction
+                if direction == "random":
+                    actual_direction = random.choice(["up", "down"])
+                else:
+                    actual_direction = direction
+
+                scroll_amount = amount if actual_direction == "down" else -amount
+                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                scrolls_done += 1
+
+            return {
+                "success": True,
+                "content": f"Completed {scrolls_done} random scrolls",
+                "scrolls_done": scrolls_done
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"random_scroll failed: {str(e)}",
+                "scrolls_done": scrolls_done
+            }
+
+    async def detect_block(self) -> Dict[str, Any]:
+        """Detect if page shows bot-detection patterns (CAPTCHA, access denied, etc.)."""
+        page = await self.ensure_browser()
+
+        try:
+            page_content = await page.content()
+            page_text = await page.inner_text("body")
+            page_url = page.url
+
+            indicators = []
+            block_type = None
+
+            # CAPTCHA detection patterns
+            captcha_patterns = [
+                ("recaptcha", "iframe[src*='recaptcha']", "reCAPTCHA"),
+                ("hcaptcha", "iframe[src*='hcaptcha']", "hCaptcha"),
+                ("cloudflare", ".cf-browser-verification", "Cloudflare"),
+                ("turnstile", "iframe[src*='turnstile']", "Cloudflare Turnstile"),
+            ]
+
+            for name, selector, display_name in captcha_patterns:
+                try:
+                    if await page.locator(selector).count() > 0:
+                        indicators.append(f"{display_name} detected")
+                        block_type = name
+                except:
+                    pass
+
+            # Text-based detection patterns
+            block_text_patterns = [
+                ("access_denied", ["access denied", "access blocked", "you have been blocked"]),
+                ("rate_limited", ["rate limit", "too many requests", "try again later"]),
+                ("bot_detection", ["unusual traffic", "automated access", "are you a robot", "prove you're human"]),
+                ("login_wall", ["please sign in", "please log in", "login required"]),
+            ]
+
+            lower_text = page_text.lower()
+            for name, patterns in block_text_patterns:
+                for pattern in patterns:
+                    if pattern in lower_text:
+                        indicators.append(f"Text pattern: '{pattern}'")
+                        if not block_type:
+                            block_type = name
+                        break
+
+            # Check for Cloudflare challenge page
+            if "checking your browser" in lower_text or "just a moment" in lower_text:
+                indicators.append("Cloudflare challenge page")
+                block_type = "cloudflare_challenge"
+
+            blocked = len(indicators) > 0
+
+            return {
+                "success": True,
+                "content": f"Block detection complete: {'BLOCKED' if blocked else 'OK'}",
+                "blocked": blocked,
+                "block_type": block_type,
+                "indicators": indicators
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"detect_block failed: {str(e)}",
+                "blocked": False,
+                "block_type": None,
+                "indicators": []
+            }
+
+    async def wait_for_selector_with_fallbacks(
+        self,
+        selector: str,
+        fallback_selectors: List[str] = None,
+        timeout_ms: int = 10000,
+        state: str = "visible"
+    ) -> Dict[str, Any]:
+        """Wait for selector with fallback chain."""
+        page = await self.ensure_browser()
+
+        selectors_to_try = [selector] + (fallback_selectors or [])
+        tried = []
+
+        for sel in selectors_to_try:
+            try:
+                await page.wait_for_selector(sel, state=state, timeout=timeout_ms)
+                return {
+                    "success": True,
+                    "content": f"Found selector: {sel}",
+                    "matched_selector": sel,
+                    "tried": tried
+                }
+            except Exception as e:
+                tried.append({"selector": sel, "error": str(e)})
+                continue
+
+        return {
+            "success": False,
+            "error": f"No selectors matched after trying {len(tried)} options",
+            "matched_selector": None,
+            "tried": tried
+        }
+
 
 # Global runtime instance
 _runtime: Optional[PlaywrightRuntime] = None
@@ -791,6 +1184,41 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
                 arguments.get("max_scrolls", 10)
             ),
             "browser_extract_job_links": lambda: runtime.extract_job_links(),
+            # Phase 7: Hard-Site Scraping tools
+            "browser_extract_links": lambda: runtime.extract_links(
+                arguments.get("selector", "a"),
+                arguments.get("filter_pattern"),
+                arguments.get("include_text", True)
+            ),
+            "browser_extract_text": lambda: runtime.extract_text(
+                arguments.get("selector", ""),
+                arguments.get("clean_whitespace", True),
+                arguments.get("max_length")
+            ),
+            "browser_extract_attributes": lambda: runtime.extract_attributes(
+                arguments.get("selector", ""),
+                arguments.get("attributes", [])
+            ),
+            "browser_scroll_until": lambda: runtime.scroll_until(
+                arguments.get("condition", "count"),
+                arguments.get("selector"),
+                arguments.get("max_scrolls", 20),
+                arguments.get("scroll_delay_ms")
+            ),
+            "browser_random_scroll": lambda: runtime.random_scroll(
+                arguments.get("min_scrolls", 2),
+                arguments.get("max_scrolls", 5),
+                arguments.get("min_delay_ms", 300),
+                arguments.get("max_delay_ms", 1200),
+                arguments.get("direction", "down")
+            ),
+            "browser_detect_block": lambda: runtime.detect_block(),
+            "browser_wait_for_selector": lambda: runtime.wait_for_selector_with_fallbacks(
+                arguments.get("selector", ""),
+                arguments.get("fallback_selectors"),
+                arguments.get("timeout_ms", 10000),
+                arguments.get("state", "visible")
+            ),
         }
 
         if tool_name not in tool_mapping:

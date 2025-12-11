@@ -758,7 +758,16 @@ Take a screenshot`,
         upload: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
         click_first_job: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3H8"/><path d="M12 11v4"/><path d="M10 13h4"/></svg>',
         extract_job_links: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
-        loop_jobs: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>'
+        loop_jobs: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>',
+        // Phase 7: Hard-Site Scraping icons
+        extract_links: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><line x1="9" y1="15" x2="15" y2="9"/></svg>',
+        extract_text: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>',
+        extract_attributes: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+        scroll_until: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/><line x1="5" y1="19" x2="19" y2="19"/></svg>',
+        random_scroll: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/></svg>',
+        detect_block: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+        wait_for_selector: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+        loop_urls: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>'
     };
 
     // Step Schema - defines all supported actions and their fields
@@ -877,6 +886,104 @@ Take a screenshot`,
                 { name: 'job_url_source', type: 'text', label: 'Job URLs Source', default: 'job_links', placeholder: 'job_links', hint: 'Label from Extract Job Links step', required: true },
                 { name: 'max_jobs', type: 'number', label: 'Max Jobs', default: 5, min: 1, max: 50, placeholder: '5', hint: 'Maximum number of jobs to process' }
             ]
+        },
+
+        // ==========================================
+        // Phase 7: Hard-Site Scraping Actions
+        // ==========================================
+
+        extract_links: {
+            label: 'Extract Links',
+            icon: STEP_ICONS.extract_links,
+            category: 'Hard Sites',
+            description: 'Extract all links matching a selector with optional URL filtering',
+            fields: [
+                { name: 'selector', type: 'text', label: 'CSS Selector', required: true, default: 'a', placeholder: 'a[href*="/comments/"]', hint: 'CSS selector for link elements' },
+                { name: 'filter_pattern', type: 'text', label: 'URL Filter (regex)', required: false, placeholder: '/article/', hint: 'Only include URLs matching this pattern' },
+                { name: 'include_text', type: 'toggle', label: 'Include link text', default: true },
+                { name: 'label', type: 'text', label: 'Output Label', default: 'links', placeholder: 'links', hint: 'Label for extracted URLs (used by Loop URLs)', required: true }
+            ]
+        },
+        extract_text: {
+            label: 'Extract Text',
+            icon: STEP_ICONS.extract_text,
+            category: 'Hard Sites',
+            description: 'Extract text content with optional cleaning and truncation',
+            fields: [
+                { name: 'selector', type: 'text', label: 'CSS Selector', required: true, placeholder: '.post-content, article', hint: 'CSS selector for text elements' },
+                { name: 'clean_whitespace', type: 'toggle', label: 'Clean whitespace', default: true, hint: 'Collapse multiple spaces/newlines' },
+                { name: 'max_length', type: 'number', label: 'Max Length', required: false, placeholder: '2000', hint: 'Truncate text to N characters' },
+                { name: 'label', type: 'text', label: 'Output Label', default: 'text', placeholder: 'content', hint: 'Label for extracted text', required: true }
+            ]
+        },
+        extract_attributes: {
+            label: 'Extract Attributes',
+            icon: STEP_ICONS.extract_attributes,
+            category: 'Hard Sites',
+            description: 'Extract multiple HTML attributes from elements',
+            fields: [
+                { name: 'selector', type: 'text', label: 'CSS Selector', required: true, placeholder: 'img.thumbnail', hint: 'CSS selector for elements' },
+                { name: 'attributes', type: 'text', label: 'Attributes (comma-separated)', required: true, placeholder: 'href, data-id, title', hint: 'e.g., href, src, data-id, title' },
+                { name: 'label', type: 'text', label: 'Output Label', default: 'attributes', placeholder: 'attrs', hint: 'Label for extracted data', required: true }
+            ]
+        },
+        scroll_until: {
+            label: 'Scroll Until',
+            icon: STEP_ICONS.scroll_until,
+            category: 'Hard Sites',
+            description: 'Scroll page until a condition is met (selector visible, end of page, or count)',
+            fields: [
+                { name: 'scroll_condition', type: 'select', label: 'Condition', options: ['count', 'selector_visible', 'end_of_page'], default: 'count', hint: 'When to stop scrolling' },
+                { name: 'selector', type: 'text', label: 'Target Selector', required: false, placeholder: '#load-more', showWhen: { scroll_condition: 'selector_visible' }, hint: 'Stop when this element is visible' },
+                { name: 'max_scrolls', type: 'number', label: 'Max Scrolls', default: 20, min: 1, max: 100, placeholder: '20', hint: 'Safety limit for scroll iterations' },
+                { name: 'scroll_delay_ms', type: 'number', label: 'Delay (ms)', required: false, placeholder: '1000', hint: 'Delay between scrolls (default: random 500-1500ms)' }
+            ]
+        },
+        random_scroll: {
+            label: 'Random Scroll',
+            icon: STEP_ICONS.random_scroll,
+            category: 'Hard Sites',
+            description: 'Human-like scrolling with randomized amounts and timing',
+            fields: [
+                { name: 'min_scrolls', type: 'number', label: 'Min Scrolls', default: 2, min: 1, placeholder: '2' },
+                { name: 'max_scrolls', type: 'number', label: 'Max Scrolls', default: 5, min: 1, max: 20, placeholder: '5' },
+                { name: 'min_delay_ms', type: 'number', label: 'Min Delay (ms)', default: 300, min: 50, placeholder: '300' },
+                { name: 'max_delay_ms', type: 'number', label: 'Max Delay (ms)', default: 1200, min: 100, placeholder: '1200' },
+                { name: 'scroll_direction', type: 'select', label: 'Direction', options: ['down', 'up', 'random'], default: 'down' }
+            ]
+        },
+        detect_block: {
+            label: 'Detect Bot Block',
+            icon: STEP_ICONS.detect_block,
+            category: 'Hard Sites',
+            description: 'Check if page shows bot-detection patterns (CAPTCHA, access denied)',
+            fields: [
+                { name: 'abort_on_block', type: 'toggle', label: 'Abort workflow if blocked', default: false, hint: 'Stop workflow immediately if block detected' }
+            ]
+        },
+        wait_for_selector: {
+            label: 'Wait for Selector',
+            icon: STEP_ICONS.wait_for_selector,
+            category: 'Hard Sites',
+            description: 'Wait for a selector with fallback chain and configurable timeout',
+            fields: [
+                { name: 'selector', type: 'text', label: 'Primary Selector', required: true, placeholder: '.content', hint: 'Main selector to wait for' },
+                { name: 'fallback_selectors', type: 'text', label: 'Fallback Selectors (comma-separated)', required: false, placeholder: 'main, article, #content', hint: 'Try these if primary fails' },
+                { name: 'timeout_ms', type: 'number', label: 'Timeout (ms)', default: 10000, min: 1000, placeholder: '10000', hint: 'Max time to wait per selector' },
+                { name: 'wait_state', type: 'select', label: 'Wait State', options: ['visible', 'attached', 'hidden'], default: 'visible' }
+            ]
+        },
+        loop_urls: {
+            label: 'Loop Through URLs',
+            icon: STEP_ICONS.loop_urls,
+            category: 'Hard Sites',
+            description: 'Process each URL from extract_links and extract content from each page',
+            fields: [
+                { name: 'source', type: 'text', label: 'URL Source Label', default: 'links', placeholder: 'links', hint: 'Label from Extract Links step', required: true },
+                { name: 'max_items', type: 'number', label: 'Max URLs', default: 10, min: 1, max: 100, placeholder: '10', hint: 'Maximum URLs to process' },
+                { name: 'delay_between_ms', type: 'number', label: 'Delay Between (ms)', default: 2000, min: 500, placeholder: '2000', hint: 'Wait time between URL visits' },
+                { name: 'extract_fields', type: 'textarea', label: 'Extract Fields (JSON)', required: false, placeholder: '[{"selector": "h1", "label": "title", "mode": "text"}]', hint: 'JSON array of fields to extract from each page' }
+            ]
         }
     };
 
@@ -921,6 +1028,49 @@ Take a screenshot`,
                 { action: 'wait', duration: 2000 },
                 { action: 'screenshot' }
             ]
+        },
+
+        // Phase 7: Hard-Site Scraping Templates
+        'scrape-reddit': {
+            name: 'Scrape Reddit',
+            description: 'Extract posts from a Reddit subreddit (uses proxy + stealth)',
+            steps: [
+                { action: 'goto', url: 'https://reddit.com/r/artificial' },
+                { action: 'wait', duration: 2500 },
+                { action: 'detect_block', abort_on_block: true },
+                { action: 'scroll_until', scroll_condition: 'count', max_scrolls: 5, scroll_delay_ms: 1000 },
+                { action: 'extract_links', selector: 'a[href*="/comments/"]', label: 'post_links' },
+                { action: 'extract_text', selector: '[data-testid="post-title"], .title a', label: 'post_titles' },
+                { action: 'screenshot' }
+            ]
+        },
+        'scrape-hackernews': {
+            name: 'Scrape HackerNews',
+            description: 'Extract top stories from Hacker News front page',
+            steps: [
+                { action: 'goto', url: 'https://news.ycombinator.com' },
+                { action: 'wait', duration: 1500 },
+                { action: 'detect_block', abort_on_block: true },
+                { action: 'random_scroll', min_scrolls: 2, max_scrolls: 4 },
+                { action: 'extract_links', selector: '.titleline a', label: 'story_links' },
+                { action: 'extract_text', selector: '.titleline a', label: 'story_titles' },
+                { action: 'extract_text', selector: '.score', label: 'scores' },
+                { action: 'screenshot' }
+            ]
+        },
+        'scrape-universal': {
+            name: 'Universal Scraper',
+            description: 'Generic template for scraping any bot-protected site',
+            steps: [
+                { action: 'goto', url: 'https://example.com' },
+                { action: 'wait', duration: 2000 },
+                { action: 'detect_block', abort_on_block: false },
+                { action: 'random_scroll', min_scrolls: 2, max_scrolls: 4 },
+                { action: 'wait_for_selector', selector: 'main', fallback_selectors: 'article, .content, #content', timeout_ms: 10000 },
+                { action: 'extract_text', selector: 'main', label: 'page_content', max_length: 5000 },
+                { action: 'extract_links', selector: 'a[href]', label: 'all_links' },
+                { action: 'screenshot' }
+            ]
         }
     };
 
@@ -930,12 +1080,13 @@ Take a screenshot`,
         'Interact': ['click', 'type', 'upload'],
         'Extract': ['extract'],
         'Scrape': ['extract_job_links', 'loop_jobs'],
+        'Hard Sites': ['extract_links', 'extract_text', 'extract_attributes', 'scroll_until', 'random_scroll', 'detect_block', 'wait_for_selector', 'loop_urls'],
         'Forms': ['fill_form'],
         'Control': ['wait', 'screenshot']
     };
 
     // Recommended actions for the "Recommended" section
-    const RECOMMENDED_STEPS = ['goto', 'click', 'extract', 'fill_form'];
+    const RECOMMENDED_STEPS = ['goto', 'click', 'extract', 'extract_links', 'random_scroll'];
 
     // Builder DOM Elements
     const modeTabs = document.querySelectorAll('.mode-tab');
