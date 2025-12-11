@@ -1,20 +1,27 @@
+"""
+Axiom Builder API - FastAPI Application
+
+CRITICAL FOR RAILWAY DEPLOYMENT:
+- All heavy imports (Playwright, MCP runtime) are LAZY loaded
+- Only lightweight imports at module level
+- Health endpoints work even if other modules fail to load
+"""
 import logging
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import os
 
-# Load .env file at startup
+# Load .env file at startup (lightweight)
 from dotenv import load_dotenv
 load_dotenv()
 
+# ONLY import lightweight modules at top level
+# Heavy modules (mcp_runtime, mcp_client, workflow routes) loaded lazily
 from .config import get_config, log_openai_key_status
-from .routes import workflow_router, resume_router, health_router
-from .routes.element_picker import router as element_picker_router
-from .mcp_client import shutdown_mcp_client
-from .mcp_runtime import shutdown_runtime
+from .routes.health import router as health_router
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +29,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    # Startup
+    # Startup - keep this lightweight, don't load heavy modules
     config = get_config()
     logger.info("=" * 60)
     logger.info("AXIOM API STARTING")
@@ -30,16 +37,26 @@ async def lifespan(app: FastAPI):
     logger.info(f"Port: {config.port}")
     logger.info(f"PORT env var: {os.environ.get('PORT', 'not set')}")
     logger.info("=" * 60)
-    log_openai_key_status()  # Log OpenAI key status at startup
+    log_openai_key_status()
     logger.info("MCP integration ready - browser will start on first workflow request")
     logger.info("Healthcheck endpoints: /health, /health/fast, /health/ready")
 
     yield
 
-    # Shutdown
+    # Shutdown - lazy import cleanup functions
     logger.info("Shutting down Axiom API...")
-    await shutdown_mcp_client()
-    await shutdown_runtime()
+    try:
+        from .mcp_client import shutdown_mcp_client
+        await shutdown_mcp_client()
+    except Exception as e:
+        logger.warning(f"MCP client shutdown error: {e}")
+
+    try:
+        from .mcp_runtime import shutdown_runtime
+        await shutdown_runtime()
+    except Exception as e:
+        logger.warning(f"Runtime shutdown error: {e}")
+
     logger.info("Cleanup complete")
 
 
@@ -63,8 +80,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Include routers
+    # CRITICAL: Include health router FIRST - it has zero heavy dependencies
     app.include_router(health_router)
+
+    # Lazy load heavy routers - these import Playwright/MCP
+    # Import at function call time, not module load time
+    from .routes import workflow_router, resume_router
+    from .routes.element_picker import router as element_picker_router
+
     app.include_router(workflow_router, prefix="/api")
     app.include_router(resume_router, prefix="/api")
     app.include_router(element_picker_router, prefix="/api")

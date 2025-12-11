@@ -1,13 +1,10 @@
 """
 MCP Runtime for Playwright browser automation.
 
-This module provides the actual browser automation using Playwright,
-designed to work with Cursor/Claude's native MCP integration.
-
-When running in Cursor with MCP configured:
-- Cursor manages the Playwright MCP server lifecycle
-- This runtime executes browser commands via Playwright
-- Screenshots are captured and returned as base64
+CRITICAL FOR RAILWAY DEPLOYMENT:
+- Playwright is LAZY imported only when first needed
+- No heavy imports at module load time
+- This ensures FastAPI starts quickly and healthchecks pass
 
 The runtime can operate in two modes:
 1. Native MCP mode: Tools called through Cursor's MCP protocol
@@ -19,22 +16,40 @@ import base64
 import logging
 import os
 import random
-from typing import Any, Dict, Optional
-from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional, List, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
-# Playwright imports - optional for environments without it
-try:
-    from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-    logger.warning("Playwright not available - using simulation mode")
+# =============================================================================
+# CRITICAL: All heavy imports are LAZY - not loaded at module import time
+# =============================================================================
+
+# Playwright - lazy loaded on first browser operation
+PLAYWRIGHT_AVAILABLE = None  # None = not yet checked
+_playwright_module = None
+
+def _get_playwright():
+    """Lazy import Playwright to avoid blocking app startup."""
+    global PLAYWRIGHT_AVAILABLE, _playwright_module
+    if PLAYWRIGHT_AVAILABLE is None:
+        try:
+            from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+            _playwright_module = {
+                'async_playwright': async_playwright,
+                'Browser': Browser,
+                'BrowserContext': BrowserContext,
+                'Page': Page,
+            }
+            PLAYWRIGHT_AVAILABLE = True
+            logger.info("Playwright loaded successfully (lazy)")
+        except ImportError:
+            PLAYWRIGHT_AVAILABLE = False
+            _playwright_module = None
+            logger.warning("Playwright not available - browser operations will fail")
+    return _playwright_module
 
 # Stealth mode - lazy import to avoid blocking startup
-# Will be imported on first browser launch
-STEALTH_AVAILABLE = None  # None = not yet checked, True/False = checked
+STEALTH_AVAILABLE = None  # None = not yet checked
 _stealth_async = None
 
 def _get_stealth_async():
@@ -51,8 +66,16 @@ def _get_stealth_async():
             logger.warning("playwright-stealth not available - stealth mode disabled")
     return _stealth_async if STEALTH_AVAILABLE else None
 
-# Import config for stealth/proxy settings
-from .config import get_config
+# Config - lazy loaded
+_cached_config = None
+
+def _get_config():
+    """Lazy import config to avoid pydantic validation at import time."""
+    global _cached_config
+    if _cached_config is None:
+        from .config import get_config
+        _cached_config = get_config()
+    return _cached_config
 
 
 class PlaywrightRuntime:
@@ -61,15 +84,17 @@ class PlaywrightRuntime:
 
     This class manages a Playwright browser instance and provides
     methods that map to MCP tool calls.
+
+    CRITICAL: No Playwright imports happen until ensure_browser() is called.
     """
 
     def __init__(self):
         self._playwright = None
-        self._browser: Optional[Browser] = None
-        self._context: Optional[BrowserContext] = None
-        self._page: Optional[Page] = None
+        self._browser = None  # Type: Optional[Browser] - lazy typed
+        self._context = None  # Type: Optional[BrowserContext] - lazy typed
+        self._page = None     # Type: Optional[Page] - lazy typed
         self._headless = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
-        self._config = get_config()  # Load stealth/proxy config
+        self._config = None   # Lazy loaded on first use
 
     async def ensure_browser(self) -> Page:
         """Ensure browser is running and return the page."""
@@ -84,14 +109,21 @@ class PlaywrightRuntime:
 
     async def _start_browser(self) -> None:
         """Start the Playwright browser with stealth and proxy support."""
-        if not PLAYWRIGHT_AVAILABLE:
+        # Lazy load Playwright
+        pw = _get_playwright()
+        if not pw:
             raise RuntimeError("Playwright is not installed")
+
+        # Lazy load config
+        if self._config is None:
+            self._config = _get_config()
 
         config = self._config
         proxy_config = config.proxy_config
 
         logger.info(f"Starting Playwright browser (headless={self._headless}, stealth={config.stealth_mode}, proxy={proxy_config is not None})")
 
+        async_playwright = pw['async_playwright']
         self._playwright = await async_playwright().start()
 
         # Browser launch args for stealth - hide automation markers
