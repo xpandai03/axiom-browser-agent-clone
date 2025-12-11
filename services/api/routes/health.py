@@ -1,9 +1,23 @@
 from fastapi import APIRouter
+from fastapi.responses import PlainTextResponse
 from datetime import datetime
 
 from ..config import get_openai_api_key, get_config
 
 router = APIRouter(prefix="/health", tags=["health"])
+
+
+@router.get("/fast", response_class=PlainTextResponse)
+async def fast_health_check():
+    """
+    Ultra-lightweight health check for Railway/container orchestration.
+
+    This endpoint:
+    - Returns immediately with no dependencies
+    - No database calls, no config loading, no heavy imports
+    - Plain text response for minimal overhead
+    """
+    return "ok"
 
 
 @router.get("")

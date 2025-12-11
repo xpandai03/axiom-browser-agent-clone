@@ -1,9 +1,25 @@
 import os
 import logging
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def get_port_from_env() -> int:
+    """
+    Get port from environment.
+
+    Railway sets PORT directly (not API_PORT), so we check both.
+    Priority: PORT > API_PORT > default 8080
+    """
+    # Railway sets PORT directly
+    port_str = os.environ.get("PORT") or os.environ.get("API_PORT") or "8080"
+    try:
+        return int(port_str)
+    except ValueError:
+        return 8080
 
 
 def get_openai_api_key() -> Tuple[Optional[str], Optional[str]]:
@@ -34,7 +50,7 @@ class APIConfig(BaseSettings):
 
     # Server configuration
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8080  # Default matches Railway's typical port
     debug: bool = False
 
     # CORS configuration
@@ -94,7 +110,12 @@ class APIConfig(BaseSettings):
 
 def get_config() -> APIConfig:
     """Get API configuration from environment."""
-    return APIConfig()
+    # Create config and override port with Railway-compatible value
+    config = APIConfig()
+    # Override port from PORT env var (Railway sets this directly)
+    config_dict = config.model_dump()
+    config_dict["port"] = get_port_from_env()
+    return APIConfig(**config_dict)
 
 
 def log_openai_key_status():

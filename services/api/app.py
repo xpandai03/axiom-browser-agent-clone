@@ -23,9 +23,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
-    logger.info("Starting Axiom API...")
+    config = get_config()
+    logger.info("=" * 60)
+    logger.info("AXIOM API STARTING")
+    logger.info(f"Host: {config.host}")
+    logger.info(f"Port: {config.port}")
+    logger.info(f"PORT env var: {os.environ.get('PORT', 'not set')}")
+    logger.info("=" * 60)
     log_openai_key_status()  # Log OpenAI key status at startup
     logger.info("MCP integration ready - browser will start on first workflow request")
+    logger.info("Healthcheck endpoints: /health, /health/fast, /health/ready")
 
     yield
 
