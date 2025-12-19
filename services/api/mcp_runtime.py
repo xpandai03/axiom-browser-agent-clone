@@ -108,8 +108,13 @@ class PlaywrightRuntime:
         delay = random.randint(min_ms, max_ms) / 1000
         await asyncio.sleep(delay)
 
-    async def _start_browser(self) -> None:
-        """Start the Playwright browser with stealth and proxy support."""
+    async def _start_browser(self, skip_stealth: bool = False) -> None:
+        """
+        Start the Playwright browser with proxy support.
+
+        Args:
+            skip_stealth: If True, skip playwright-stealth patches (helps with some sites)
+        """
         # Lazy load Playwright
         pw = _get_playwright()
         if not pw:
@@ -122,18 +127,30 @@ class PlaywrightRuntime:
         config = self._config
         proxy_config = config.proxy_config
 
-        # CRITICAL: Log proxy status for debugging
-        if proxy_config:
-            logger.info(f"🔐 PROXY ENABLED: server={proxy_config['server']}, user={proxy_config.get('username', 'none')[:4]}***")
-        else:
-            logger.warning("⚠️ PROXY DISABLED - Traffic going through datacenter IP! Set API_PROXY_ENABLED=true")
+        # ========================================================================
+        # STEP 5: EXPLICIT PROXY LOGGING
+        # ========================================================================
+        logger.info("=" * 70)
+        logger.info("PROXY CONFIGURATION STATUS")
+        logger.info("=" * 70)
+        logger.info(f"  proxy_enabled env var: {config.proxy_enabled}")
+        logger.info(f"  proxy_server env var:  {config.proxy_server}")
+        logger.info(f"  proxy_username set:    {config.proxy_username is not None}")
+        logger.info(f"  proxy_country:         {config.proxy_country}")
+        logger.info(f"  proxy_session:         {config.proxy_session}")
 
-        logger.info(f"Starting Playwright browser (headless={self._headless}, stealth={config.stealth_mode}, proxy={proxy_config is not None})")
+        if proxy_config:
+            logger.info(f"  ✅ PROXY CONFIG BUILT: {config.proxy_config_display}")
+            logger.info(f"  📤 Formatted username: {proxy_config['username']}")
+        else:
+            logger.error("  ❌ PROXY CONFIG IS NONE - WILL USE DATACENTER IP!")
+            logger.error("  Required env vars: API_PROXY_ENABLED=true, API_PROXY_SERVER, API_PROXY_USERNAME, API_PROXY_PASSWORD")
+        logger.info("=" * 70)
 
         async_playwright = pw['async_playwright']
         self._playwright = await async_playwright().start()
 
-        # Browser launch args for stealth - hide automation markers
+        # Browser launch args
         launch_args = [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -146,25 +163,31 @@ class PlaywrightRuntime:
             "--disable-sync",
             "--no-first-run",
             "--single-process",
-            "--disable-blink-features=AutomationControlled",  # Hide automation flag
+            "--disable-blink-features=AutomationControlled",
         ]
 
-        # Add proxy to browser launch if configured
+        # ========================================================================
+        # STEP 2: PROXY APPLIED AT BROWSER LAUNCH (NOT CONTEXT)
+        # ========================================================================
         launch_kwargs = {
             "headless": self._headless,
             "args": launch_args,
         }
+
         if proxy_config:
             launch_kwargs["proxy"] = proxy_config
-            logger.info(f"Using proxy: {proxy_config['server']}")
+            logger.info(f"🔐 PROXY ATTACHED TO BROWSER LAUNCH: {proxy_config['server']}")
+        else:
+            logger.warning("⚠️ NO PROXY ATTACHED - Browser launching with direct connection!")
 
+        logger.info(f"Launching browser with kwargs: headless={self._headless}, proxy={'ATTACHED' if proxy_config else 'NONE'}")
         self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+        logger.info("✅ Browser launched successfully")
 
-        # Phase 7: Viewport jitter for stealth (randomize dimensions slightly)
+        # Viewport with slight randomization
         viewport_width = 1920 + random.randint(-50, 50)
         viewport_height = 1080 + random.randint(-30, 30)
 
-        # Context with realistic viewport and user agent
         context_kwargs = {
             "viewport": {"width": viewport_width, "height": viewport_height},
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -172,21 +195,95 @@ class PlaywrightRuntime:
             "timezone_id": "America/New_York",
         }
         self._context = await self._browser.new_context(**context_kwargs)
-        logger.info(f"Browser context created with viewport: {viewport_width}x{viewport_height}")
         self._page = await self._context.new_page()
 
-        # CRITICAL: Block heavy resources to prevent stalls on cloud IPs
+        # Block heavy resources
         await self._setup_resource_blocking(self._page)
 
-        # Apply stealth patches if available and enabled (lazy load)
-        if config.stealth_mode:
+        # ========================================================================
+        # STEP 4: CONDITIONALLY APPLY STEALTH
+        # ========================================================================
+        if skip_stealth:
+            logger.info("⚠️ STEALTH SKIPPED (skip_stealth=True) - May help with Uber Eats")
+        elif config.stealth_mode:
             stealth_func = _get_stealth_async()
             if stealth_func:
                 await stealth_func(self._page)
-                logger.info("Stealth mode applied - browser fingerprinting masked")
+                logger.info("Stealth mode applied")
 
         self._page.set_default_timeout(30000)
-        logger.info("Browser started successfully")
+        logger.info(f"Browser ready (viewport: {viewport_width}x{viewport_height})")
+
+    # ========================================================================
+    # STEP 1: OUTBOUND IP VERIFICATION (MANDATORY)
+    # ========================================================================
+    async def verify_outbound_ip(self) -> dict:
+        """
+        Navigate to ipify to verify the outbound IP address.
+
+        This MUST be called before any target site navigation to prove proxy is working.
+        Returns dict with ip, is_residential (heuristic), verification_success.
+        """
+        page = await self.ensure_browser()
+
+        logger.info("=" * 70)
+        logger.info("🌐 OUTBOUND IP VERIFICATION (via api.ipify.org)")
+        logger.info("=" * 70)
+
+        try:
+            # Navigate to ipify
+            response = await page.goto(
+                "https://api.ipify.org?format=json",
+                wait_until="domcontentloaded",
+                timeout=15000
+            )
+
+            if not response or response.status != 200:
+                logger.error(f"❌ IP CHECK FAILED: HTTP {response.status if response else 'no response'}")
+                return {"ip": None, "verification_success": False, "error": "HTTP error"}
+
+            # Get the page content (should be JSON)
+            content = await page.content()
+
+            # Parse IP from response
+            import re
+            ip_match = re.search(r'"ip"\s*:\s*"([^"]+)"', content)
+            if ip_match:
+                ip_address = ip_match.group(1)
+                logger.info(f"🌐 OUTBOUND IP CHECK: {{'ip': '{ip_address}'}}")
+
+                # Heuristic: Check if IP looks residential
+                # Railway IPs are typically in specific ranges
+                is_likely_datacenter = (
+                    ip_address.startswith("34.") or   # GCP
+                    ip_address.startswith("35.") or   # GCP
+                    ip_address.startswith("104.") or  # Various cloud
+                    ip_address.startswith("52.") or   # AWS
+                    ip_address.startswith("54.") or   # AWS
+                    ip_address.startswith("18.") or   # AWS
+                    ip_address.startswith("3.") or    # AWS
+                    ip_address.startswith("13.")      # AWS
+                )
+
+                if is_likely_datacenter:
+                    logger.warning(f"⚠️ IP {ip_address} LOOKS LIKE DATACENTER - Proxy may not be working!")
+                else:
+                    logger.info(f"✅ IP {ip_address} does NOT match common datacenter ranges")
+
+                return {
+                    "ip": ip_address,
+                    "is_likely_datacenter": is_likely_datacenter,
+                    "verification_success": True
+                }
+            else:
+                logger.error(f"❌ Could not parse IP from response: {content[:200]}")
+                return {"ip": None, "verification_success": False, "error": "Parse error"}
+
+        except Exception as e:
+            logger.error(f"❌ IP VERIFICATION FAILED: {e}")
+            return {"ip": None, "verification_success": False, "error": str(e)}
+        finally:
+            logger.info("=" * 70)
 
     async def _setup_resource_blocking(self, page) -> None:
         """Block fonts, images, media to prevent stalls on slow/blocked connections."""

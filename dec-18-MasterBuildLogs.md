@@ -2182,3 +2182,243 @@ INFO:     100.64.0.7:57016 - "POST /api/food-delivery/run HTTP/1.1" 200 OK
 ✢ Schlepping… (esc to interrupt · thought for 2s)                                   
                                                                                     
 ─────────────
+ FOUND THE ISSUE! Let me check the config file:                                    
+                                                                                    
+⏺ Read(services/api/config.py)                                                      
+  ⎿  Read 40 lines                                                                  
+                                                                                    
+⏺ 🎯 ROOT CAUSE IDENTIFIED                                                          
+                                                                                    
+  The proxy is DISABLED by default (proxy_enabled: bool = False)                    
+                                                                                    
+  Even with credentials set, proxy is never used because:                           
+  1. API_PROXY_ENABLED env var is not set to true                                   
+  2. The env prefix is API_ (see line 75)                                           
+                                                                                    
+  ---                                                                               
+  Required Railway Environment Variables                                            
+                                                                                    
+  You need to set these EXACTLY in Railway:                                         
+                                                                                    
+  API_PROXY_ENABLED=true                                                            
+  API_PROXY_SERVER=http://geo.iproyal.com:12321                                     
+  API_PROXY_USERNAME=your_iproyal_username                                          
+  API_PROXY_PASSWORD=your_iproyal_password                                          
+                                                                                    
+  Get your IPRoyal credentials from: Dashboard → Residential → Features → expand to 
+  see username/password                                                             
+                                                                                    
+  ---                                                                               
+  Let me also add logging to confirm proxy usage:                                   
+                                                                                    
+⏺ Update(services/api/mcp_runtime.py)                                               
+  ⎿  Added 6 lines                                                                  
+       122            config = self._config                                         
+       123            proxy_config = config.proxy_config                            
+       124                                                                          
+       125 +          # CRITICAL: Log proxy status for debugging                    
+       126 +          if proxy_config:                                              
+       127 +              logger.info(f"🔐 PROXY ENABLED:                           
+           + server={proxy_config['server']},                                       
+           + user={proxy_config.get('username', 'none')[:4]}***")                   
+       128 +          else:                                                         
+       129 +              logger.warning("⚠️ PROXY DISABLED - Traffic going         
+           + through datacenter IP! Set API_PROXY_ENABLED=true")                    
+       130 +                                                                        
+       131            logger.info(f"Starting Playwright browser                     
+             (headless={self._headless}, stealth={config.stealth_mode},             
+             proxy={proxy_config is not None})")                                    
+       132                                                                          
+       133            async_playwright = pw['async_playwright']                     
+                                                                                    
+⏺ Also add proxy status to health check:                                            
+                                                                                    
+⏺ Read(services/api/routes/health.py)                                               
+  ⎿  Read 30 lines                                                                  
+                                                                                    
+⏺ Update(services/api/routes/health.py)                                             
+  ⎿  Added 2 lines                                                                  
+       44                "openai_env_source": source,                               
+       45                "stealth_mode": config.stealth_mode,                       
+       46                "proxy_enabled": config.proxy_enabled,                     
+       47 +              "proxy_server": config.proxy_server[:30] + "..." if        
+          + config.proxy_server else None,                                          
+       48 +              "proxy_configured": config.proxy_config is not None,       
+       49            }                                                              
+       50        except Exception as e:                                             
+       51            return {                                                       
+                                                                                    
+⏺ Bash(git add -A && git commit -m "Add proxy status logging and health check       
+      visibility…)                                                                  
+  ⎿  [main 26e2bac] Add proxy status logging and health check visibility            
+      3 files changed, 178 insertions(+), 1 deletion(-)                             
+     To https://github.com/xpandai03/axiom-browser-agent-clone.git                  
+        a02f595..26e2bac  main -> main                                              
+                                                                                    
+⏺ 🔍 DIAGNOSIS COMPLETE                                                             
+                                                                                    
+  Why Proxy Is NOT Being Used                                                       
+                                                                                    
+  | Issue                       | Status                               |            
+  |-----------------------------|--------------------------------------|            
+  | proxy_enabled: bool = False | ❌ Proxy disabled by default         |            
+  | API_PROXY_ENABLED env var   | ❌ Not set in Railway                |            
+  | IPRoyal balance             | ✅ $20.00 available                  |            
+  | IPRoyal usage graph         | ❌ Flat = zero traffic through proxy |            
+                                                                                    
+  ---                                                                               
+  ✅ FIX: Set These Railway Environment Variables                                   
+                                                                                    
+  Go to Railway → Your Service → Variables → Add:                                   
+                                                                                    
+  API_PROXY_ENABLED=true                                                            
+  API_PROXY_SERVER=http://geo.iproyal.com:12321                                     
+  API_PROXY_USERNAME=<get from IPRoyal dashboard>                                   
+  API_PROXY_PASSWORD=<get from IPRoyal dashboard>                                   
+                                                                                    
+  To get IPRoyal credentials:                                                       
+  1. Go to IPRoyal Dashboard → Proxies → Residential                                
+  2. Click "Features" to expand                                                     
+  3. Copy the username and password shown there                                     
+                                                                                    
+  ---                                                                               
+  🧪 Verification Steps                                                             
+                                                                                    
+  1. Check /api/health after deploy:                                                
+                                                                                    
+  {                                                                                 
+    "proxy_enabled": true,        // Must be true                                   
+    "proxy_server": "http://geo...",                                                
+    "proxy_configured": true      // Must be true                                   
+  }                                                                                 
+                                                                                    
+  2. Check Railway logs for:                                                        
+                                                                                    
+  🔐 PROXY ENABLED: server=http://geo.iproyal.com:12321, user=xxxx***               
+                                                                                    
+  NOT this:                                                                         
+  ⚠️ PROXY DISABLED - Traffic going through datacenter IP!                          
+                                                                                    
+  3. Check IPRoyal dashboard:                                                       
+                                                                                    
+  - Usage graph should show traffic after running workflow                          
+  - If still flat after test → credentials wrong                                    
+                                                                                    
+  ---                                                                               
+  Common Playwright Proxy Mistakes (FYI)                                            
+                                                                                    
+  | Mistake                               | Your Code                           |   
+  |---------------------------------------|-------------------------------------|   
+  | Proxy at BrowserContext level (wrong) | ✅ Correct - at browser.launch()    |   
+  | Missing username/password in dict     | ✅ Correct - both included          |   
+  | Wrong URL format                      | ⚠️ Verify IPRoyal format            |   
+  | Proxy not passed to launch            | ✅ Correct - launch_kwargs["proxy"] |   
+                                                                                    
+  ---                                                                               
+  Correct Playwright Proxy Format (Reference)                                       
+                                                                                    
+  # IPRoyal residential proxy format                                                
+  proxy_config = {                                                                  
+      "server": "http://geo.iproyal.com:12321",                                     
+      "username": "your_username",                                                  
+      "password": "your_password"                                                   
+  }                                                                                 
+                                                                                    
+  browser = await playwright.chromium.launch(                                       
+      headless=True,                                                                
+      proxy=proxy_config  # Must be at browser.launch(), not context                
+  )                  
+  You are debugging a Python Playwright service that scrapes Uber Eats.
+The app is deployed on Railway and uses IPRoyal residential proxies.
+
+Current symptoms:
+- Uber Eats returns a degraded DOM with no interactive elements
+- Logs show: navigation_stalled
+- IPRoyal account has $20 balance
+- Residential proxy credentials are configured via env vars
+- Behavior does NOT change before vs after adding funds
+- IPRoyal usage graph is flat (0 MB used)
+
+This strongly suggests the proxy is not actually being used OR is being used incorrectly.
+
+Your task:
+Implement a hard, undeniable verification of proxy usage and fix any proxy wiring issues.
+
+---
+
+### STEP 1 — Add Outbound IP Proof (MANDATORY)
+
+Before navigating to Uber Eats, add a test in the SAME browser instance:
+
+- Navigate to https://api.ipify.org?format=json
+- Log the returned IP with a clear prefix, e.g.:
+
+  🌐 OUTBOUND IP CHECK: {"ip":"x.x.x.x"}
+
+This log must appear before Uber Eats navigation.
+This is non-negotiable — do not skip it.
+
+---
+
+### STEP 2 — Ensure Proxy Is Applied at Browser Launch (NOT Context)
+
+Verify that:
+- Proxy configuration is applied ONLY at playwright.chromium.launch()
+- No browser instance is reused across runs
+- A new browser is launched whenever proxy_enabled is true
+
+If a browser is launched without proxy and reused, FIX IT.
+
+Show the corrected launch code.
+
+---
+
+### STEP 3 — Enforce US + Sticky Session Proxy
+
+Modify proxy configuration to:
+- Use United States only (not random)
+- Use a sticky session identifier (e.g. session=ubereats1)
+
+If IPRoyal requires username-based session encoding, implement it.
+
+Explain clearly how the session is applied.
+
+---
+
+### STEP 4 — Temporarily Disable Stealth for Uber Eats
+
+Disable playwright_stealth for Uber Eats navigation ONLY.
+Explain why this is necessary.
+
+---
+
+### STEP 5 — Log Proxy Activation Explicitly
+
+Add logs that clearly state:
+- proxy_enabled = true/false
+- proxy server + username (mask password)
+- confirmation that proxy config is attached to browser launch
+
+If proxy is not attached, fail loudly.
+
+---
+
+### STEP 6 — Return Findings
+
+At the end, summarize ONE of the following outcomes:
+- Proxy was never applied (wiring bug)
+- Proxy applied but IP still datacenter (credentials/session issue)
+- Proxy applied with residential IP (Uber Eats block confirmed at proxy level)
+
+Do NOT speculate.
+Use the ipify proof to justify conclusions.
+
+---
+
+Constraints:
+- Do not change scraping logic beyond what’s necessary
+- Do not optimize selectors or waits
+- Do not suggest retries as a fix
+- Focus ONLY on proxy correctness
+
+This is a production debugging task. Precision matters more than brevity.

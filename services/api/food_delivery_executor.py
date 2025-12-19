@@ -341,6 +341,67 @@ class FoodDeliveryExecutor:
         except Exception:
             return False
 
+    async def _verify_outbound_ip(self) -> dict:
+        """
+        Verify outbound IP by navigating to ipify.
+
+        This is the executor-level wrapper that uses the MCP client.
+        """
+        import re
+
+        logger.info("=" * 70)
+        logger.info("🌐 OUTBOUND IP VERIFICATION (via api.ipify.org)")
+        logger.info("=" * 70)
+
+        try:
+            # Navigate to ipify
+            nav_result = await self.client.navigate("https://api.ipify.org?format=json")
+
+            if not nav_result.success:
+                logger.error(f"❌ IP CHECK FAILED: Navigation error")
+                return {"ip": None, "verification_success": False, "error": "Navigation failed"}
+
+            # Get page content
+            content_result = await self.client.call_tool("browser_get_content", {"selector": "body"})
+
+            if content_result.success and content_result.content:
+                content = str(content_result.content)
+                ip_match = re.search(r'"ip"\s*:\s*"([^"]+)"', content)
+
+                if not ip_match:
+                    # Try plain text format
+                    ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', content)
+
+                if ip_match:
+                    ip_address = ip_match.group(1)
+                    logger.info(f"🌐 OUTBOUND IP CHECK: {{'ip': '{ip_address}'}}")
+
+                    # Heuristic for datacenter IPs
+                    is_likely_datacenter = any(
+                        ip_address.startswith(prefix) for prefix in
+                        ["34.", "35.", "104.", "52.", "54.", "18.", "3.", "13.", "23.", "44."]
+                    )
+
+                    if is_likely_datacenter:
+                        logger.warning(f"⚠️ IP {ip_address} LOOKS LIKE DATACENTER!")
+                    else:
+                        logger.info(f"✅ IP {ip_address} does NOT match datacenter ranges")
+
+                    return {
+                        "ip": ip_address,
+                        "is_likely_datacenter": is_likely_datacenter,
+                        "verification_success": True
+                    }
+
+            logger.error("❌ Could not extract IP from response")
+            return {"ip": None, "verification_success": False, "error": "Parse error"}
+
+        except Exception as e:
+            logger.error(f"❌ IP VERIFICATION FAILED: {e}")
+            return {"ip": None, "verification_success": False, "error": str(e)}
+        finally:
+            logger.info("=" * 70)
+
     async def _detect_page_state(self) -> str:
         """
         Detect the current page state after navigation.
@@ -406,6 +467,27 @@ class FoodDeliveryExecutor:
         - A failure reason string otherwise (must be valid FailureReason)
         """
         try:
+            # ================================================================
+            # STEP 0: MANDATORY IP VERIFICATION (before Uber Eats)
+            # ================================================================
+            logger.info("Step 0: Verifying outbound IP address...")
+
+            # Call the runtime's IP verification method
+            if hasattr(self.client, 'runtime') and hasattr(self.client.runtime, 'verify_outbound_ip'):
+                ip_result = await self.client.runtime.verify_outbound_ip()
+            else:
+                # Direct call for MCP client that wraps runtime
+                ip_result = await self._verify_outbound_ip()
+
+            # Store IP info in debug
+            self.debug.outbound_ip = ip_result.get('ip')
+            self.debug.ip_is_datacenter = ip_result.get('is_likely_datacenter', True)
+
+            if ip_result.get('is_likely_datacenter'):
+                logger.warning("⚠️ OUTBOUND IP APPEARS TO BE DATACENTER - Uber Eats may block!")
+            else:
+                logger.info(f"✅ Outbound IP {ip_result.get('ip')} looks residential")
+
             # Step 1: Navigate to Uber Eats
             logger.info("Step 1: Navigating to Uber Eats...")
             nav_result = await self.client.navigate("https://www.ubereats.com")

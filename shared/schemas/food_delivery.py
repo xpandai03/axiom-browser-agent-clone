@@ -248,6 +248,9 @@ class DebugInfo(BaseModel):
         None,
         description="Page state detected (healthy, navigation_stalled, bot_challenge_detected, etc.)"
     )
+    # IP verification fields
+    outbound_ip: Optional[str] = Field(None, description="Outbound IP from ipify check")
+    ip_is_datacenter: Optional[bool] = Field(None, description="True if IP looks like datacenter")
 
 
 class FoodDeliveryMetadata(BaseModel):

@@ -67,9 +67,11 @@ class APIConfig(BaseSettings):
 
     # Proxy Configuration (user provides credentials via env vars)
     proxy_enabled: bool = False
-    proxy_server: Optional[str] = None      # e.g., "http://proxy.example.com:8080"
+    proxy_server: Optional[str] = None      # e.g., "http://geo.iproyal.com:12321"
     proxy_username: Optional[str] = None
     proxy_password: Optional[str] = None
+    proxy_country: str = "us"               # Default to US for Uber Eats
+    proxy_session: Optional[str] = None     # Sticky session ID (e.g., "ubereats1")
 
     class Config:
         env_prefix = "API_"
@@ -78,16 +80,48 @@ class APIConfig(BaseSettings):
 
     @property
     def proxy_config(self) -> Optional[dict]:
-        """Get Playwright proxy config dict."""
+        """
+        Get Playwright proxy config dict with IPRoyal-compatible formatting.
+
+        IPRoyal username format for geo + sticky session:
+        username_country-us_session-mysession123
+        """
         if not self.proxy_enabled or not self.proxy_server:
             return None
 
-        config = {"server": self.proxy_server}
-        if self.proxy_username:
-            config["username"] = self.proxy_username
-        if self.proxy_password:
-            config["password"] = self.proxy_password
+        if not self.proxy_username or not self.proxy_password:
+            return None
+
+        # Build IPRoyal-formatted username with country + session
+        username_parts = [self.proxy_username]
+
+        # Add country targeting (always US for Uber Eats)
+        if self.proxy_country:
+            username_parts.append(f"country-{self.proxy_country}")
+
+        # Add sticky session if configured
+        if self.proxy_session:
+            username_parts.append(f"session-{self.proxy_session}")
+
+        formatted_username = "_".join(username_parts)
+
+        config = {
+            "server": self.proxy_server,
+            "username": formatted_username,
+            "password": self.proxy_password,
+        }
         return config
+
+    @property
+    def proxy_config_display(self) -> str:
+        """Get a safe-to-log proxy config summary."""
+        if not self.proxy_enabled:
+            return "DISABLED"
+        if not self.proxy_server:
+            return "NO_SERVER"
+        if not self.proxy_username:
+            return "NO_USERNAME"
+        return f"server={self.proxy_server}, user={self.proxy_username[:4]}***_country-{self.proxy_country}_session-{self.proxy_session or 'none'}"
 
     @property
     def openai_api_key(self) -> Optional[str]:
