@@ -103,3 +103,37 @@ async def browser_check():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat(),
         }
+
+
+@router.get("/health/proxy-sanity")
+async def proxy_sanity():
+    """
+    Standalone proxy sanity check.
+
+    Tests ONLY whether the proxy is working by:
+    1. Launching browser ONCE with proxy
+    2. Navigating to ipify
+    3. Returning the outbound IP
+
+    Does NOT touch Uber Eats.
+    Does NOT retry.
+    Does NOT create multiple contexts.
+
+    Success: {"success": true, "ip": "x.x.x.x", "is_datacenter": false}
+    """
+    from datetime import datetime
+    try:
+        from ..proxy_sanity import run_proxy_sanity_check
+
+        result = await run_proxy_sanity_check()
+
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            **result
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat(),
+        }

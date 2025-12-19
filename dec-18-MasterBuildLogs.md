@@ -2672,3 +2672,95 @@ Precision matters more than brevity.
 
 ```
 ---
+                                                                                   
+⏺ Summary: Fix for ERR_PROXY_AUTH_UNSUPPORTED                                       
+                                                                                    
+  Root Cause                                                                        
+                                                                                    
+  Chromium does NOT support separate username/password fields for HTTP proxies. This
+   only works for SOCKS proxies. IPRoyal uses HTTP proxies, causing:                
+                                                                                    
+  net::ERR_PROXY_AUTH_UNSUPPORTED                                                   
+                                                                                    
+  ---                                                                               
+  1. Updated Proxy Construction (config.py:81-135)                                  
+                                                                                    
+  BEFORE (Broken):                                                                  
+  return {                                                                          
+      "server": "http://geo.iproyal.com:12321",                                     
+      "username": "user_country-us_session-ubereats1",                              
+      "password": "mypassword",                                                     
+  }                                                                                 
+                                                                                    
+  AFTER (Fixed):                                                                    
+  # Normalize server (strip protocol)                                               
+  server = "geo.iproyal.com:12321"                                                  
+                                                                                    
+  # URL-encode credentials                                                          
+  encoded_user = quote("user_country-us_session-ubereats1", safe='')                
+  encoded_pass = quote("mypassword", safe='')                                       
+                                                                                    
+  # Embed auth in URL                                                               
+  proxy_url = f"http://{encoded_user}:{encoded_pass}@{server}"                      
+                                                                                    
+  return {                                                                          
+      "server": proxy_url  # NO username/password fields!                           
+  }                                                                                 
+                                                                                    
+  ---                                                                               
+  2. Browser Launch (mcp_runtime.py:185-194)                                        
+                                                                                    
+  launch_kwargs["proxy"] = proxy_config  # Only at chromium.launch()                
+  self._browser = await self._playwright.chromium.launch(**launch_kwargs)           
+                                                                                    
+  Proxy is attached ONLY at chromium.launch(), not at BrowserContext or Page level. 
+                                                                                    
+  ---                                                                               
+  3. IP Verification Location (food_delivery_executor.py:409-428)                   
+                                                                                    
+  The ipify check runs BEFORE Uber Eats navigation:                                 
+                                                                                    
+  Step 0: Verifying outbound IP address...                                          
+  🌐 OUTBOUND IP VERIFICATION (via api.ipify.org)                                   
+  🌐 OUTBOUND IP CHECK: {'ip': 'x.x.x.x'}                                           
+  ✅ IP does NOT match datacenter ranges                                            
+                                                                                    
+  Step 1: Navigating to Uber Eats...                                                
+                                                                                    
+  ---                                                                               
+  4. Why ERR_PROXY_AUTH_UNSUPPORTED Is Resolved                                     
+                                                                                    
+  | Issue                                               | Fix                       
+                          |                                                         
+  |-----------------------------------------------------|---------------------------
+  ------------------------|                                                         
+  | Chromium ignores username/password for HTTP proxies | Auth embedded in URL      
+                          |                                                         
+  | Separate fields only work for SOCKS                 | Using HTTP URL format:    
+  http://user:pass@host:port |                                                      
+  | Special chars in credentials                        | URL-encoded with          
+  urllib.parse.quote()             |                                                
+                                                                                    
+  ---                                                                               
+  Expected Logs After Deploy                                                        
+                                                                                    
+  ======================================================================            
+  PROXY CONFIGURATION STATUS                                                        
+  ======================================================================            
+    API_PROXY_ENABLED:  True                                                        
+    API_PROXY_SERVER:   geo.iproyal.com:12321                                       
+    API_PROXY_USERNAME: SET                                                         
+    API_PROXY_PASSWORD: SET                                                         
+    API_PROXY_COUNTRY:  us                                                          
+    API_PROXY_SESSION:  ubereats1                                                   
+    ✅ PROXY CONFIG BUILT (auth embedded in URL)                                    
+    🔐 PROXY ENABLED: geo.iproyal.com (auth embedded)                               
+  ======================================================================            
+  🔐 PROXY ATTACHED TO chromium.launch() - host: geo.iproyal.com                    
+  Launching browser: headless=True, proxy=ATTACHED (auth embedded)                  
+  ✅ Browser launched successfully                                                  
+  ======================================================================            
+  🌐 OUTBOUND IP CHECK: {'ip': '123.45.67.89'}                                      
+  ✅ IP does NOT match datacenter ranges                                            
+  ======================================================================            
+                                   
