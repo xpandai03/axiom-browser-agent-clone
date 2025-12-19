@@ -2763,4 +2763,318 @@ Precision matters more than brevity.
   🌐 OUTBOUND IP CHECK: {'ip': '123.45.67.89'}                                      
   ✅ IP does NOT match datacenter ranges                                            
   ======================================================================            
-                                   
+                                                                                   
+⏺ Now commit and push:                                                              
+                                                                                    
+⏺ Bash(git add -A && git commit -m "Add standalone proxy sanity check (no retries,  
+      no complexity)…)                                                              
+  ⎿ [main b3c9b64] Add standalone proxy sanity check (no retries, no complexity     
+    )                                                                               
+     3 files changed, 422 insertions(+), 1 deletion(-)                              
+    … +3 lines (ctrl+o to expand)                                                   
+                                                                                    
+                                                                                    
+⏺ Summary: Standalone Proxy Sanity Check                                            
+                                                                                    
+  What Was Created                                                                  
+                                                                                    
+  New file: services/api/proxy_sanity.py                                            
+  - Minimal, isolated proxy test                                                    
+  - NO retries                                                                      
+  - NO fresh contexts                                                               
+  - NO stealth                                                                      
+  - NO resource blocking                                                            
+  - NO Uber Eats                                                                    
+                                                                                    
+  New endpoint: GET /api/health/proxy-sanity                                        
+                                                                                    
+  ---                                                                               
+  Root Cause Analysis: Where Browser Was Closed                                     
+                                                                                    
+  | Location                                       | Problem                        
+                                   |                                                
+  |------------------------------------------------|--------------------------------
+  ---------------------------------|                                                
+  | mcp_runtime.py:201-241 _create_fresh_context() | Closes page/context but browser
+   might already be dead           |                                                
+  | mcp_runtime.py:243-256 close()                 | Called during retry, kills     
+  browser mid-workflow                 |                                            
+  | mcp_runtime.py:273-283 retry loop              | Calls _create_fresh_context()  
+  on each retry, cascading failures |                                               
+                                                                                    
+  Cascade:                                                                          
+  Attempt 1 fails → close() called                                                  
+  Attempt 2: _create_fresh_context() fails (browser already closed)                 
+  Attempt 3: Same failure                                                           
+  → "Target page, context or browser has been closed"                               
+                                                                                    
+  ---                                                                               
+  Exact Browser Launch Code (proxy_sanity.py)                                       
+                                                                                    
+  launch_kwargs = {                                                                 
+      "headless": True,                                                             
+      "args": [                                                                     
+          "--no-sandbox",                                                           
+          "--disable-setuid-sandbox",                                               
+          "--disable-dev-shm-usage",                                                
+          "--disable-gpu",                                                          
+      ]                                                                             
+  }                                                                                 
+                                                                                    
+  if proxy_config:                                                                  
+      launch_kwargs["proxy"] = proxy_config  # {"server":                           
+  "http://user:pass@host:port"}                                                     
+                                                                                    
+  browser = await playwright_instance.chromium.launch(**launch_kwargs)              
+  page = await browser.new_page()                                                   
+                                                                                    
+  ---                                                                               
+  Exact Navigation Code                                                             
+                                                                                    
+  response = await page.goto(                                                       
+      "https://api.ipify.org?format=text",                                          
+      wait_until="domcontentloaded",                                                
+      timeout=30000                                                                 
+  )                                                                                 
+  body_text = await page.text_content("body")                                       
+  ip_address = body_text.strip()                                                    
+                                                                                    
+  ---                                                                               
+  Expected Logging Output                                                           
+                                                                                    
+  Success:                                                                          
+  ============================================================                      
+  🔍 PROXY SANITY CHECK - START                                                     
+  ============================================================                      
+  Step 1: Building proxy config...                                                  
+  ============================================================                      
+  PROXY SANITY CHECK - ENV VARS                                                     
+  ============================================================                      
+    API_PROXY_ENABLED:  True                                                        
+    API_PROXY_SERVER:   geo.iproyal.com:12321                                       
+    API_PROXY_USERNAME: SET                                                         
+    API_PROXY_PASSWORD: SET                                                         
+    API_PROXY_COUNTRY:  us                                                          
+    API_PROXY_SESSION:  ubereats1                                                   
+  ============================================================                      
+  ✅ PROXY CONFIG BUILT                                                             
+     Host: geo.iproyal.com                                                          
+     Username format: xxxx***_country-us_session-ubereats1                          
+     Auth: EMBEDDED IN URL                                                          
+  Step 2: Importing Playwright...                                                   
+  Step 3: Starting Playwright...                                                    
+  Step 4: Launching Chromium...                                                     
+     🔐 PROXY ATTACHED TO chromium.launch()                                         
+     ✅ Browser launched                                                            
+  Step 5: Creating page...                                                          
+     ✅ Page created                                                                
+  Step 6: Navigating to ipify...                                                    
+     ✅ Navigation complete (HTTP 200)                                              
+  Step 7: Extracting IP...                                                          
+                                                                                    
+  ============================================================                      
+  🌐 PROXY SANITY IP: 123.45.67.89                                                  
+  ============================================================                      
+  ✅ IP 123.45.67.89 does NOT match known datacenter ranges                         
+  ============================================================                      
+  🔍 PROXY SANITY CHECK - COMPLETE                                                  
+  ============================================================                      
+  Step 8: Cleaning up...                                                            
+     Page closed                                                                    
+     Browser closed                                                                 
+     Playwright stopped                                                             
+                                                                                    
+  ---                                                                               
+  How to Test                                                                       
+                                                                                    
+  After Railway deploys:                                                            
+  curl https://your-app.railway.app/api/health/proxy-sanity                         
+                                                                                    
+  Expected response:                                                                
+  {                                                                                 
+    "success": true,                                                                
+    "ip": "123.45.67.89",                                                           
+    "is_datacenter": false,                                                         
+    "error": null,                                                                  
+    "timestamp": "2025-12-18T..."                                                   
+  }                                                                                 
+                                                                                    
+  ---                                                                               
+  Decision Tree                                                                     
+                                                                                    
+  | Result                               | Conclusion                         | Next
+   Step                         |                                                   
+  |--------------------------------------|------------------------------------|-----
+  ------------------------------|                                                   
+  | success: true, is_datacenter: false  | ✅ Proxy works with residential IP |     
+  Re-enable Uber Eats workflow      |                                               
+  | success: true, is_datacenter: true   | ⚠️ Proxy not routing correctly     |     
+  Check IPRoyal credentials/session |                                               
+  | success: false, error mentions proxy | ❌ Proxy auth failed               |     
+  Verify credentials format         |                                               
+  | success: false, browser error        | ❌ Browser lifecycle issue         |     
+  Different problem entirely        |                                                       
+  | success: false, browser error        | ❌ Browser lifecycle    
+  issue         | Different problem entirely        |              
+                                                                   
+> You are in CODE FIX MODE.                                        
+                                                                   
+Context:                                                           
+- A new standalone proxy sanity check was implemented in           
+`services/api/proxy_sanity.py`                                     
+- The endpoint `/api/health/proxy-sanity` currently returns        
+HTTP 404 in production                                             
+- This confirms the router is NOT wired into the FastAPI app       
+- The proxy sanity logic itself is correct — only routing is       
+broken                                                             
+                                                                   
+Your task is to wire the proxy sanity endpoint correctly into      
+the FastAPI app.                                                   
+                                                                   
+---                                                                
+                                                                   
+### REQUIRED STEPS (DO NOT SKIP ANY)                               
+                                                                   
+1. Open `services/api/proxy_sanity.py`                             
+   - Ensure it defines:                                            
+     - `router = APIRouter()`                                      
+     - A route:                                                    
+       `@router.get("/api/health/proxy-sanity")`                   
+   - Do NOT change the proxy logic inside the handler              
+                                                                   
+2. Open `services/api/routes/__init__.py`                          
+   - Import the proxy sanity router:                               
+     ```python                                                     
+     from services.api.proxy_sanity import router as               
+proxy_sanity_router                                                
+     ```                                                           
+   - Export it if this file uses `__all__`                         
+                                                                   
+3. Open `services/api/app.py`                                      
+   - Import the router:                                            
+     ```python                                                     
+     from services.api.routes import proxy_sanity_router           
+     ```                                                           
+   - Mount it on the app:                                          
+     ```python                                                     
+     app.include_router(proxy_sanity_router)                       
+     ```                                                           
+                                                                   
+4. Verify that:                                                    
+   - No duplicate routers are mounted                              
+   - No path prefix accidentally hides                             
+`/api/health/proxy-sanity`                                         
+   - Existing routes (food-delivery, health, etc.) remain          
+untouched                                                          
+                                                                   
+---                                                                
+                                                                   
+### CONSTRAINTS                                                    
+                                                                   
+- Do NOT modify proxy logic                                        
+- Do NOT touch Uber Eats workflow                                  
+- Do NOT add retries, waits, or logging                            
+- This is a routing fix only                                       
+                                                                   
+---                                                                
+                                                                   
+### DELIVERABLE                                                    
+                                                                   
+After making changes:                                              
+1. Show the exact diffs for:                                       
+   - `services/api/proxy_sanity.py`                                
+   - `services/api/routes/__init__.py`                             
+   - `services/api/app.py`                                         
+2. Confirm that `/api/health/proxy-sanity` will return HTTP 200    
+ after deploy                                                      
+                                                                   
+Proceed now.                                                       
+                                                                   
+⏺ Let me check the current state of each file and fix the routing. 
+                                                                   
+⏺ Read(services/api/proxy_sanity.py)                               
+  ⎿  Read 30 lines                                                 
+                                                                   
+⏺ Read(services/api/routes/__init__.py)                            
+  ⎿  Read 7 lines                                                  
+                                                                   
+⏺ Read(services/api/app.py)                                        
+  ⎿  Read 80 lines                                                 
+                                                                   
+⏺ Let me check if the endpoint was already added to health.py:     
+                                                                   
+⏺ Search(pattern: "proxy-sanity", path: "services/api",            
+        output_mode: "content")                                    
+  ⎿  Found 1 line (ctrl+o to expand)                               
+                                                                   
+⏺ Read(services/api/app.py)                                        
+  ⎿  Read 50 lines                                                 
+                                                                   
+⏺ I see the issue. The health_router is mounted without the /api   
+  prefix (line 84), so the actual URL is /health/proxy-sanity, NOT 
+  /api/health/proxy-sanity.                                        
+                                                                   
+  Let me fix this properly by creating a dedicated router in       
+  proxy_sanity.py and mounting it with the /api prefix.            
+                                                                   
+  Step 1: Add router to proxy_sanity.py                            
+                                                                   
+⏺ Read(services/api/proxy_sanity.py)                               
+  ⎿  Read 50 lines                                                 
+                                                                   
+⏺ Read(services/api/proxy_sanity.py)                               
+  ⎿  Read 47 lines                                                 
+                                                                   
+⏺ Now I'll make the changes:                                       
+                                                                   
+  Step 1: Add router to proxy_sanity.py                            
+                                                                   
+⏺ Update(services/api/proxy_sanity.py)                             
+  ⎿  Added 33 lines                                                
+       284        return                                           
+             asyncio.run(run_proxy_sanity_check())                 
+       285                                                         
+       286                                                         
+       287 +  # ============================================       
+           + =================================                     
+       288 +  # FastAPI Router                                     
+       289 +  # ============================================       
+           + =================================                     
+       290 +  from fastapi import APIRouter                        
+       291 +  from datetime import datetime                        
+       292 +                                                       
+       293 +  router = APIRouter(tags=["proxy"])                   
+       294 +                                                       
+       295 +                                                       
+       296 +  @router.get("/health/proxy-sanity")                  
+       297 +  async def proxy_sanity_endpoint():                   
+       298 +      """                                              
+       299 +      Standalone proxy sanity check endpoint.          
+       300 +                                                       
+       301 +      Tests ONLY whether the proxy is working          
+           + by:                                                   
+       302 +      1. Launching browser ONCE with proxy             
+       303 +      2. Navigating to ipify                           
+       304 +      3. Returning the outbound IP                     
+       305 +                                                       
+       306 +      Does NOT touch Uber Eats.                        
+       307 +      Does NOT retry.                                  
+       308 +      Does NOT create multiple contexts.               
+       309 +                                                       
+       310 +      Returns:                                         
+       311 +          {"success": true, "ip": "x.x.x.x",           
+           + "is_datacenter": false}                               
+       312 +      """                                              
+       313 +      result = await run_proxy_sanity_check()          
+       314 +      return {                                         
+       315 +          "timestamp":                                 
+           + datetime.utcnow().isoformat(),                        
+       316 +          **result                                     
+       317 +      }                                                
+       318 +                                                       
+       319 +                                                       
+       320    if __name__ == "__main__":                           
+       321        # Configure logging for standalone run           
+       322        logging.basicConfig(                             
+                                                                   
+⏺ Step 2: Update 

@@ -284,6 +284,39 @@ def run_sanity_check_sync() -> dict:
     return asyncio.run(run_proxy_sanity_check())
 
 
+# =============================================================================
+# FastAPI Router
+# =============================================================================
+from fastapi import APIRouter
+from datetime import datetime
+
+router = APIRouter(tags=["proxy"])
+
+
+@router.get("/health/proxy-sanity")
+async def proxy_sanity_endpoint():
+    """
+    Standalone proxy sanity check endpoint.
+
+    Tests ONLY whether the proxy is working by:
+    1. Launching browser ONCE with proxy
+    2. Navigating to ipify
+    3. Returning the outbound IP
+
+    Does NOT touch Uber Eats.
+    Does NOT retry.
+    Does NOT create multiple contexts.
+
+    Returns:
+        {"success": true, "ip": "x.x.x.x", "is_datacenter": false}
+    """
+    result = await run_proxy_sanity_check()
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        **result
+    }
+
+
 if __name__ == "__main__":
     # Configure logging for standalone run
     logging.basicConfig(
