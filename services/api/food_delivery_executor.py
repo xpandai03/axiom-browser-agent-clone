@@ -295,6 +295,80 @@ class FoodDeliveryExecutor:
 
             await asyncio.sleep(2)  # Wait for page to stabilize
 
+            # ============================================================
+            # DEBUG INSTRUMENTATION - DO NOT REMOVE UNTIL ISSUE IS RESOLVED
+            # ============================================================
+            logger.info("=" * 60)
+            logger.info("DEBUG: Post-navigation instrumentation")
+            logger.info("=" * 60)
+
+            # 1. Take screenshot
+            try:
+                screenshot_result = await self.client.call_tool("browser_screenshot", {})
+                if screenshot_result.success and screenshot_result.screenshot_base64:
+                    logger.info(f"DEBUG: Screenshot captured ({len(screenshot_result.screenshot_base64)} bytes base64)")
+                else:
+                    logger.warning("DEBUG: Screenshot failed")
+            except Exception as e:
+                logger.warning(f"DEBUG: Screenshot error: {e}")
+
+            # 2. Log page URL
+            try:
+                url_result = await self.client.call_tool(
+                    "browser_evaluate",
+                    {"script": "window.location.href"}
+                )
+                if url_result.success:
+                    logger.info(f"DEBUG: page.url() = {url_result.content}")
+                else:
+                    logger.warning(f"DEBUG: URL fetch failed: {url_result.error}")
+            except Exception as e:
+                logger.warning(f"DEBUG: URL error: {e}")
+
+            # 3. Log page title
+            try:
+                title_result = await self.client.call_tool(
+                    "browser_evaluate",
+                    {"script": "document.title"}
+                )
+                if title_result.success:
+                    logger.info(f"DEBUG: document.title = {title_result.content}")
+                else:
+                    logger.warning(f"DEBUG: Title fetch failed: {title_result.error}")
+            except Exception as e:
+                logger.warning(f"DEBUG: Title error: {e}")
+
+            # 4. Log body text (first 1500 chars)
+            try:
+                body_result = await self.client.call_tool(
+                    "browser_evaluate",
+                    {"script": "document.body ? document.body.innerText.slice(0, 1500) : 'NO BODY'"}
+                )
+                if body_result.success:
+                    logger.info(f"DEBUG: body text preview:\n{body_result.content}")
+                else:
+                    logger.warning(f"DEBUG: Body text fetch failed: {body_result.error}")
+            except Exception as e:
+                logger.warning(f"DEBUG: Body text error: {e}")
+
+            # 5. Count input elements
+            try:
+                input_count_result = await self.client.call_tool(
+                    "browser_evaluate",
+                    {"script": "document.querySelectorAll('input').length"}
+                )
+                if input_count_result.success:
+                    logger.info(f"DEBUG: input element count = {input_count_result.content}")
+                else:
+                    logger.warning(f"DEBUG: Input count failed: {input_count_result.error}")
+            except Exception as e:
+                logger.warning(f"DEBUG: Input count error: {e}")
+
+            logger.info("=" * 60)
+            logger.info("DEBUG: End instrumentation")
+            logger.info("=" * 60)
+            # ============================================================
+
             # Try to find and click address input
             address_input = await self._try_selectors(
                 SELECTORS["address_input"], action="click"
