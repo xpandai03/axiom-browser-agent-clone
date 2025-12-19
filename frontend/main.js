@@ -112,6 +112,19 @@ Take a screenshot`,
             ],
             description: "Extract data from multiple jobs on a Greenhouse board (title, location, description + screenshots)",
             prefillUserData: false
+        },
+        uber_eats_protein: {
+            custom_endpoint: '/api/food-delivery/run',
+            request_body: {
+                delivery_address: "3333 S La Cienaga Blvd, Los Angeles, CA 90016",
+                min_protein_grams: 100,
+                max_price_usd: 30,
+                search_terms: ["chicken bowl", "protein bowl", "grilled chicken", "burrito bowl"],
+                max_restaurants: 5,
+                headless: true
+            },
+            description: "Find high-protein meal carts (≥100g) under $30 on Uber Eats",
+            prefillUserData: false
         }
     };
 
@@ -1276,6 +1289,12 @@ Take a screenshot`,
             const preset = WORKFLOW_PRESETS[workflowKey];
 
             if (preset) {
+                // Check if preset uses custom_endpoint (special API workflow)
+                if (preset.custom_endpoint) {
+                    runCustomEndpointWorkflow(preset);
+                    return;
+                }
+
                 // Check if preset uses workflow_json (Builder mode)
                 if (preset.workflow_json) {
                     // Switch to Builder mode
@@ -1303,6 +1322,195 @@ Take a screenshot`,
             }
         });
     });
+
+    // Run custom endpoint workflow (like Uber Eats Protein Finder)
+    async function runCustomEndpointWorkflow(preset) {
+        if (workflowState === WorkflowState.RUNNING) {
+            showError('A workflow is already running');
+            return;
+        }
+
+        setWorkflowState(WorkflowState.RUNNING);
+
+        // Clear timeline and show running state
+        clearTimeline();
+
+        // Add initial status card
+        const statusCard = document.createElement('div');
+        statusCard.className = 'timeline-card';
+        statusCard.id = 'custom-workflow-status';
+        statusCard.innerHTML = `
+            <div class="card-header">
+                <span class="step-badge running">Running</span>
+                <span class="card-title">${preset.description || 'Custom Workflow'}</span>
+            </div>
+            <div class="card-content">
+                <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+                    This may take a few minutes as the agent scans multiple restaurants...
+                </p>
+                <div class="loading-spinner" style="margin: 1rem auto;"></div>
+            </div>
+        `;
+        timeline.appendChild(statusCard);
+
+        const runStartTime = new Date();
+
+        try {
+            const response = await fetch(preset.custom_endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(preset.request_body)
+            });
+
+            const result = await response.json();
+
+            // Remove loading card
+            statusCard.remove();
+
+            // Display results
+            displayFoodDeliveryResults(result);
+
+            setWorkflowState(WorkflowState.DONE);
+
+            // Add to history
+            const runEntry = createHistoryEntry({
+                instructions: preset.description,
+                workflowSteps: [],
+                steps: [],
+                success: result.results && result.results.length > 0,
+                error: result.failure_reason || null,
+                durationMs: Date.now() - runStartTime.getTime(),
+                customData: result
+            });
+            addRunToHistory(runEntry);
+            updateHistoryBadge();
+
+        } catch (error) {
+            console.error('Custom workflow error:', error);
+            statusCard.innerHTML = `
+                <div class="card-header">
+                    <span class="step-badge failed">Failed</span>
+                    <span class="card-title">Workflow Error</span>
+                </div>
+                <div class="card-content">
+                    <p style="color: var(--error-red);">${escapeHtml(error.message)}</p>
+                </div>
+            `;
+            setWorkflowState(WorkflowState.FAILED);
+            showError(error.message);
+        }
+    }
+
+    // Display food delivery results in timeline
+    function displayFoodDeliveryResults(result) {
+        // Summary card
+        const summaryCard = document.createElement('div');
+        summaryCard.className = 'timeline-card';
+
+        if (result.results && result.results.length > 0) {
+            summaryCard.innerHTML = `
+                <div class="card-header">
+                    <span class="step-badge success">Found ${result.results.length} options</span>
+                    <span class="card-title">High-Protein Meal Carts</span>
+                </div>
+                <div class="card-content">
+                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        📍 ${escapeHtml(result.location)}<br>
+                        🎯 Target: ≥${result.constraints.min_protein_grams}g protein, &lt;$${result.constraints.max_price_usd}
+                    </p>
+                </div>
+            `;
+            timeline.appendChild(summaryCard);
+
+            // Individual result cards
+            result.results.forEach((cart, index) => {
+                const cartCard = document.createElement('div');
+                cartCard.className = 'timeline-card';
+
+                const itemsHtml = cart.cart_items.map(item => `
+                    <div style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color);">
+                        <div>
+                            <strong>${escapeHtml(item.item_name)}</strong>
+                            ${item.protein_source === 'estimated' ? '<span style="color: var(--warning-yellow); font-size: 0.75rem;"> (est.)</span>' : ''}
+                            <br>
+                            <span style="color: var(--text-secondary); font-size: 0.85rem;">${item.protein_grams}g protein</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span>$${item.price.toFixed(2)}</span>
+                        </div>
+                    </div>
+                `).join('');
+
+                cartCard.innerHTML = `
+                    <div class="card-header">
+                        <span class="step-badge ${index === 0 ? 'success' : 'pending'}">#${cart.rank}</span>
+                        <span class="card-title">${escapeHtml(cart.restaurant)}</span>
+                    </div>
+                    <div class="card-content">
+                        <div style="margin-bottom: 1rem;">
+                            ${itemsHtml}
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-weight: bold; padding-top: 0.5rem;">
+                            <span>💪 ${cart.total_protein_grams}g protein</span>
+                            <span>💰 $${cart.total_price.toFixed(2)}</span>
+                        </div>
+                        ${cart.eta_minutes ? `<p style="color: var(--text-secondary); margin-top: 0.5rem;">🚚 ~${cart.eta_minutes} min delivery</p>` : ''}
+                        ${cart.includes_estimates ? '<p style="color: var(--warning-yellow); font-size: 0.8rem; margin-top: 0.5rem;">⚠️ Some protein values estimated from menu names</p>' : ''}
+                        <p style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.5rem; font-style: italic;">${escapeHtml(cart.reason)}</p>
+                        <a href="${escapeHtml(cart.restaurant_url)}" target="_blank" class="btn-primary" style="display: inline-block; margin-top: 1rem; text-decoration: none;">
+                            Open on Uber Eats →
+                        </a>
+                    </div>
+                `;
+                timeline.appendChild(cartCard);
+            });
+
+        } else {
+            // No results found
+            summaryCard.innerHTML = `
+                <div class="card-header">
+                    <span class="step-badge failed">No Results</span>
+                    <span class="card-title">Could not find matching meals</span>
+                </div>
+                <div class="card-content">
+                    <p style="color: var(--text-secondary);">
+                        📍 ${escapeHtml(result.location)}<br><br>
+                        <strong>Reason:</strong> ${escapeHtml(result.failure_reason || 'Unknown error')}
+                    </p>
+                    ${result.debug ? `
+                        <div style="margin-top: 1rem; padding: 0.75rem; background: var(--bg-tertiary); border-radius: 0.5rem; font-size: 0.85rem;">
+                            <strong>Debug Info:</strong><br>
+                            Restaurants scanned: ${result.debug.restaurants_scanned || 0}<br>
+                            Items extracted: ${result.debug.items_extracted || 0}<br>
+                            ${result.debug.best_attempt ? `Best attempt: ${result.debug.best_attempt.protein}g protein, $${result.debug.best_attempt.price}` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+            timeline.appendChild(summaryCard);
+        }
+
+        // Metadata card
+        if (result.metadata) {
+            const metaCard = document.createElement('div');
+            metaCard.className = 'timeline-card';
+            metaCard.innerHTML = `
+                <div class="card-header">
+                    <span class="step-badge">Info</span>
+                    <span class="card-title">Workflow Stats</span>
+                </div>
+                <div class="card-content" style="font-size: 0.85rem; color: var(--text-secondary);">
+                    <p>Restaurants scanned: ${result.metadata.restaurants_scanned}</p>
+                    <p>Items extracted: ${result.metadata.items_extracted}</p>
+                    <p>Duration: ${(result.metadata.workflow_duration_ms / 1000).toFixed(1)}s</p>
+                    <p>Search terms: ${result.metadata.search_terms_used.join(', ')}</p>
+                </div>
+            `;
+            timeline.appendChild(metaCard);
+        }
+    }
 
     // Close screenshot viewer on escape key
     document.addEventListener('keydown', (e) => {
