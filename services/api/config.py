@@ -81,12 +81,21 @@ class APIConfig(BaseSettings):
     @property
     def proxy_config(self) -> Optional[dict]:
         """
-        Get Playwright proxy config dict with IPRoyal-compatible formatting.
+        Get Playwright proxy config with EMBEDDED AUTH in URL.
+
+        CRITICAL: Chromium does NOT support separate username/password fields
+        for HTTP proxies. This causes: net::ERR_PROXY_AUTH_UNSUPPORTED
+
+        FIX: Embed credentials directly in the proxy URL:
+        http://username:password@host:port
 
         IPRoyal username format for geo + sticky session:
         username_country-us_session-mysession123
         """
-        if not self.proxy_enabled or not self.proxy_server:
+        if not self.proxy_enabled:
+            return None
+
+        if not self.proxy_server:
             return None
 
         if not self.proxy_username or not self.proxy_password:
@@ -105,23 +114,49 @@ class APIConfig(BaseSettings):
 
         formatted_username = "_".join(username_parts)
 
-        config = {
-            "server": self.proxy_server,
-            "username": formatted_username,
-            "password": self.proxy_password,
+        # Normalize server: strip protocol if present
+        server = self.proxy_server
+        if server.startswith("http://"):
+            server = server[7:]
+        elif server.startswith("https://"):
+            server = server[8:]
+
+        # URL-encode username and password (in case of special chars)
+        from urllib.parse import quote
+        encoded_user = quote(formatted_username, safe='')
+        encoded_pass = quote(self.proxy_password, safe='')
+
+        # CRITICAL: Embed auth in URL to avoid ERR_PROXY_AUTH_UNSUPPORTED
+        proxy_url = f"http://{encoded_user}:{encoded_pass}@{server}"
+
+        return {
+            "server": proxy_url
+            # NO username/password fields - auth is embedded in URL
         }
-        return config
+
+    @property
+    def proxy_server_host(self) -> Optional[str]:
+        """Get just the hostname (for logging without credentials)."""
+        if not self.proxy_server:
+            return None
+        server = self.proxy_server
+        if server.startswith("http://"):
+            server = server[7:]
+        elif server.startswith("https://"):
+            server = server[8:]
+        # Remove port if present for cleaner logging
+        return server.split(":")[0] if ":" in server else server
 
     @property
     def proxy_config_display(self) -> str:
-        """Get a safe-to-log proxy config summary."""
+        """Get a safe-to-log proxy config summary (no credentials)."""
         if not self.proxy_enabled:
             return "DISABLED"
         if not self.proxy_server:
             return "NO_SERVER"
         if not self.proxy_username:
             return "NO_USERNAME"
-        return f"server={self.proxy_server}, user={self.proxy_username[:4]}***_country-{self.proxy_country}_session-{self.proxy_session or 'none'}"
+        return f"host={self.proxy_server_host}, user={self.proxy_username[:4]}***_country-{self.proxy_country}_session-{self.proxy_session or 'none'}"
 
     @property
     def openai_api_key(self) -> Optional[str]:

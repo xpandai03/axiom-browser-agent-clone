@@ -2422,3 +2422,253 @@ Constraints:
 - Focus ONLY on proxy correctness
 
 This is a production debugging task. Precision matters more than brevity.
+                                                                                 
+⏺ Now update the DebugInfo schema with IP fields:                                   
+                                                                                    
+⏺ Read(shared/schemas/food_delivery.py)                                             
+  ⎿  Read 20 lines                                                                  
+                                                                                    
+⏺ Update(shared/schemas/food_delivery.py)                                           
+  ⎿  Added 3 lines                                                                  
+       248            None,                                                         
+       249            description="Page state detected (healthy,                    
+             navigation_stalled, bot_challenge_detected, etc.)"                     
+       250        )                                                                 
+       251 +      # IP verification fields                                          
+       252 +      outbound_ip: Optional[str] = Field(None,                          
+           + description="Outbound IP from ipify check")                            
+       253 +      ip_is_datacenter: Optional[bool] = Field(None,                    
+           + description="True if IP looks like datacenter")                        
+       254                                                                          
+       255                                                                          
+       256    class FoodDeliveryMetadata(BaseModel):                                
+                                                                                    
+⏺ Now commit and push all changes:                                                  
+                                                                                    
+⏺ Bash(git add -A && git commit -m "CRITICAL: Add IP verification + fix proxy wiring
+       for IPRoyal…)                                                                
+  ⎿ [main 83e1913] CRITICAL: Add IP verification + fix proxy wiring for IPRoyal     
+     5 files changed, 483 insertions(+), 27 deletions(-)                            
+    To https://github.com/xpandai03/axiom-browser-agent-clone.git                   
+       26e2bac..83e1913  main -> main                                               
+                                                                                    
+                                                                                    
+⏺ STEP 6: Summary & Findings                                                        
+                                                                                    
+  Changes Implemented                                                               
+                                                                                    
+  | Step                   | Implementation                             | File      
+                   |                                                                
+  |------------------------|--------------------------------------------|-----------
+  -----------------|                                                                
+  | 1. IP Verification     | verify_outbound_ip() via ipify             |           
+  mcp_runtime.py:220-286     |                                                      
+  | 2. Proxy at Launch     | Verified + added logging                   |           
+  mcp_runtime.py:169-184     |                                                      
+  | 3. US + Sticky Session | IPRoyal format user_country-us_session-xxx |           
+  config.py:81-113           |                                                      
+  | 4. Stealth Toggle      | skip_stealth parameter                     |           
+  mcp_runtime.py:111,206-212 |                                                      
+  | 5. Explicit Logging    | Full proxy config dump at startup          |           
+  mcp_runtime.py:130-148     |                                                      
+  | 6. Debug Output        | outbound_ip, ip_is_datacenter in response  |           
+  food_delivery.py:251-253   |                                                      
+                                                                                    
+  ---                                                                               
+  Railway Environment Variables (REQUIRED)                                          
+                                                                                    
+  API_PROXY_ENABLED=true                                                            
+  API_PROXY_SERVER=http://geo.iproyal.com:12321                                     
+  API_PROXY_USERNAME=<your_iproyal_username>                                        
+  API_PROXY_PASSWORD=<your_iproyal_password>                                        
+  API_PROXY_SESSION=ubereats1                                                       
+                                                                                    
+  Get credentials from IPRoyal: Dashboard → Proxies → Residential → Features →      
+  Username/Password                                                                 
+                                                                                    
+  ---                                                                               
+  Log Interpretation After Deploy                                                   
+                                                                                    
+  Look for these log patterns:                                                      
+                                                                                    
+  ======================================================================            
+  PROXY CONFIGURATION STATUS                                                        
+  ======================================================================            
+    proxy_enabled env var: True              ← Must be True                         
+    proxy_server env var:  http://geo...     ← Must have value                      
+    proxy_username set:    True              ← Must be True                         
+    ✅ PROXY CONFIG BUILT: ...               ← Good!                                
+    📤 Formatted username: user_country-us_session-ubereats1                        
+  ======================================================================            
+  🔐 PROXY ATTACHED TO BROWSER LAUNCH       ← Critical confirmation                 
+  ======================================================================            
+  🌐 OUTBOUND IP VERIFICATION                                                       
+  ======================================================================            
+  🌐 OUTBOUND IP CHECK: {'ip': 'x.x.x.x'}   ← THE PROOF                             
+  ✅ IP does NOT match datacenter ranges     ← Success!                             
+  ======================================================================            
+                                                                                    
+  ---                                                                               
+  Outcome Classification                                                            
+                                                                                    
+  | Log Pattern                                   | Outcome                         
+       | Root Cause                         |                                       
+  |-----------------------------------------------|---------------------------------
+  -----|------------------------------------|                                       
+  | ❌ PROXY CONFIG IS NONE                       | Proxy never applied             
+       | Env vars missing                   |                                       
+  | ⚠️ NO PROXY ATTACHED                          | Proxy never applied             
+       | Wiring bug                         |                                       
+  | IP x.x.x.x LOOKS LIKE DATACENTER              | Proxy not working               
+       | Credentials wrong or IPRoyal issue |                                       
+  | ✅ IP does NOT match datacenter + still fails | Proxy works, Uber blocks        
+  residential | Need different proxy provider      |                                
+                                                                                    
+  ---                                                                               
+  Definitive Test                                                                   
+                                                                                    
+  After deploy, run the workflow and check:                                         
+                                                                                    
+  1. If IP in logs matches Railway/datacenter pattern (34.x, 35.x, etc.):           
+  → Proxy was never applied. Check env vars.                                        
+  2. If IP is different but Uber still stalls:                                      
+  → Proxy works but Uber Eats blocks it. Try different session ID or provider.      
+  3. If IP is residential AND Uber works:                                           
+  → Problem s
+  You are modifying a Python Playwright service that runs on Railway and uses IPRoyal residential proxies.
+
+Problem:
+Playwright/Chromium is throwing:
+  net::ERR_PROXY_AUTH_UNSUPPORTED
+
+This occurs because proxy authentication is currently passed via separate
+`username` / `password` fields, which Chromium does NOT support for HTTP proxies.
+
+Your task:
+Implement the correct, Chromium-supported proxy configuration by embedding
+credentials directly into the proxy URL.
+
+---
+
+### REQUIRED FIX (DO NOT DEVIATE)
+
+Replace any proxy config that looks like this:
+
+```python
+proxy = {
+    "server": "http://geo.iproyal.com:12321",
+    "username": PROXY_USER,
+    "password": PROXY_PASS,
+}
+```
+
+With this format ONLY:
+
+```
+proxy = {
+    "server": f"http://{PROXY_USER}:{PROXY_PASS}@geo.iproyal.com:12321"
+}
+```
+
+This embedded-auth URL is REQUIRED to avoid ERR_PROXY_AUTH_UNSUPPORTED.
+
+* * * * *
+
+### **IMPLEMENTATION REQUIREMENTS**
+
+1.  Read proxy values from env vars:
+
+    -   API_PROXY_ENABLED
+
+    -   API_PROXY_SERVER
+
+    -   API_PROXY_USERNAME
+
+    -   API_PROXY_PASSWORD
+
+2.  Normalize API_PROXY_SERVER so it does NOT include protocol
+
+    (strip http:// or https:// if present).
+
+3.  Construct the proxy dict ONLY if API_PROXY_ENABLED == true.
+
+4.  Pass the proxy dict ONLY at:
+
+    -   playwright.chromium.launch(...)
+
+    NOT at:
+
+    -   BrowserContext
+
+    -   Page
+
+    -   Any other level
+
+5.  If proxy auth fails or is misconfigured, fail loudly with a clear log.
+
+* * * * *
+
+### **ADD HARD VERIFICATION (MANDATORY)**
+
+Before navigating to Uber Eats, add an outbound IP proof check
+
+using the SAME browser instance:
+
+```
+await page.goto("https://api.ipify.org?format=json", timeout=20000)
+ip = await page.text_content("body")
+log.error(f"🌐 OUTBOUND IP CHECK: {ip}")
+```
+
+This must run BEFORE Uber Eats navigation.
+
+* * * * *
+
+### **LOGGING REQUIREMENTS**
+
+Add explicit logs showing:
+
+-   proxy_enabled (true/false)
+
+-   proxy server (hostname only)
+
+-   confirmation that proxy is attached to browser launch
+
+Example:
+
+```
+🔐 PROXY ENABLED: geo.iproyal.com (auth embedded)
+```
+
+If proxy is disabled or malformed, log an error and abort.
+
+* * * * *
+
+### **CONSTRAINTS**
+
+-   Do NOT change scraping logic
+
+-   Do NOT add retries or waits
+
+-   Do NOT modify selector logic
+
+-   Do NOT speculate about Uber Eats behavior
+
+This is a proxy auth wiring fix only.
+
+* * * * *
+
+### **OUTPUT**
+
+1.  Show the updated proxy construction code
+
+2.  Show the updated browser launch code
+
+3.  Confirm where the ipify check is inserted
+
+4.  Briefly explain why ERR_PROXY_AUTH_UNSUPPORTED is resolved
+
+Precision matters more than brevity.
+
+```
+---

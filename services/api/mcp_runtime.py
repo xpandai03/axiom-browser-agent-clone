@@ -128,23 +128,31 @@ class PlaywrightRuntime:
         proxy_config = config.proxy_config
 
         # ========================================================================
-        # STEP 5: EXPLICIT PROXY LOGGING
+        # EXPLICIT PROXY LOGGING (credentials embedded in URL for Chromium)
         # ========================================================================
         logger.info("=" * 70)
         logger.info("PROXY CONFIGURATION STATUS")
         logger.info("=" * 70)
-        logger.info(f"  proxy_enabled env var: {config.proxy_enabled}")
-        logger.info(f"  proxy_server env var:  {config.proxy_server}")
-        logger.info(f"  proxy_username set:    {config.proxy_username is not None}")
-        logger.info(f"  proxy_country:         {config.proxy_country}")
-        logger.info(f"  proxy_session:         {config.proxy_session}")
+        logger.info(f"  API_PROXY_ENABLED:  {config.proxy_enabled}")
+        logger.info(f"  API_PROXY_SERVER:   {config.proxy_server}")
+        logger.info(f"  API_PROXY_USERNAME: {'SET' if config.proxy_username else 'NOT SET'}")
+        logger.info(f"  API_PROXY_PASSWORD: {'SET' if config.proxy_password else 'NOT SET'}")
+        logger.info(f"  API_PROXY_COUNTRY:  {config.proxy_country}")
+        logger.info(f"  API_PROXY_SESSION:  {config.proxy_session}")
 
         if proxy_config:
-            logger.info(f"  ✅ PROXY CONFIG BUILT: {config.proxy_config_display}")
-            logger.info(f"  📤 Formatted username: {proxy_config['username']}")
+            # Log the host only (credentials are embedded in URL, don't log them!)
+            logger.info(f"  ✅ PROXY CONFIG BUILT (auth embedded in URL)")
+            logger.info(f"  🔐 PROXY ENABLED: {config.proxy_server_host} (auth embedded)")
+            logger.info(f"  📤 Config: {config.proxy_config_display}")
         else:
             logger.error("  ❌ PROXY CONFIG IS NONE - WILL USE DATACENTER IP!")
-            logger.error("  Required env vars: API_PROXY_ENABLED=true, API_PROXY_SERVER, API_PROXY_USERNAME, API_PROXY_PASSWORD")
+            logger.error("  ❌ This will cause Uber Eats to return degraded page!")
+            logger.error("  Required env vars:")
+            logger.error("    API_PROXY_ENABLED=true")
+            logger.error("    API_PROXY_SERVER=geo.iproyal.com:12321")
+            logger.error("    API_PROXY_USERNAME=<your_username>")
+            logger.error("    API_PROXY_PASSWORD=<your_password>")
         logger.info("=" * 70)
 
         async_playwright = pw['async_playwright']
@@ -176,11 +184,13 @@ class PlaywrightRuntime:
 
         if proxy_config:
             launch_kwargs["proxy"] = proxy_config
-            logger.info(f"🔐 PROXY ATTACHED TO BROWSER LAUNCH: {proxy_config['server']}")
+            # Don't log the full server URL - it contains embedded credentials!
+            logger.info(f"🔐 PROXY ATTACHED TO chromium.launch() - host: {config.proxy_server_host}")
         else:
-            logger.warning("⚠️ NO PROXY ATTACHED - Browser launching with direct connection!")
+            logger.error("⚠️ NO PROXY ATTACHED - Browser launching with DIRECT CONNECTION!")
+            logger.error("⚠️ Uber Eats WILL detect datacenter IP and return degraded page!")
 
-        logger.info(f"Launching browser with kwargs: headless={self._headless}, proxy={'ATTACHED' if proxy_config else 'NONE'}")
+        logger.info(f"Launching browser: headless={self._headless}, proxy={'ATTACHED (auth embedded)' if proxy_config else 'NONE'}")
         self._browser = await self._playwright.chromium.launch(**launch_kwargs)
         logger.info("✅ Browser launched successfully")
 
