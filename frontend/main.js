@@ -1375,10 +1375,13 @@ Take a screenshot`,
             setWorkflowState(WorkflowState.DONE);
 
             // Add to history
-            const runEntry = createHistoryEntry({
+            const runEntry = assembleRunEntry({
+                mode: 'custom',
+                startedAt: runStartTime.toISOString(),
                 instructions: preset.description,
-                workflowSteps: [],
-                steps: [],
+                parsedSteps: [],
+                stepResults: [],
+                screenshots: [],
                 success: result.results && result.results.length > 0,
                 error: result.failure_reason || null,
                 durationMs: Date.now() - runStartTime.getTime(),

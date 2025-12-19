@@ -284,123 +284,157 @@ class FoodDeliveryExecutor:
     # Phase A: Setup
     # ========================================================================
 
+    async def _take_debug_screenshot(self, label: str) -> None:
+        """Take a screenshot and log it for debugging."""
+        try:
+            screenshot_result = await self.client.call_tool("browser_screenshot", {})
+            if screenshot_result.success and screenshot_result.screenshot_base64:
+                # Store in debug info for UI display
+                if not hasattr(self, '_debug_screenshots'):
+                    self._debug_screenshots = []
+                self._debug_screenshots.append({
+                    "label": label,
+                    "base64": screenshot_result.screenshot_base64
+                })
+                logger.info(f"DEBUG SCREENSHOT [{label}]: Captured ({len(screenshot_result.screenshot_base64)} bytes)")
+            else:
+                logger.warning(f"DEBUG SCREENSHOT [{label}]: Failed to capture")
+        except Exception as e:
+            logger.warning(f"DEBUG SCREENSHOT [{label}]: Error - {e}")
+
     async def _setup_location(self, address: str) -> bool:
         """Navigate to Uber Eats and set delivery location."""
         try:
             # Navigate to Uber Eats
+            logger.info("=" * 60)
+            logger.info("STEP 1: Navigating to Uber Eats...")
+            logger.info("=" * 60)
+
             nav_result = await self.client.navigate("https://www.ubereats.com")
             if not nav_result.success:
                 logger.error(f"Navigation failed: {nav_result.error}")
+                await self._take_debug_screenshot("S1_NAV_FAILED")
                 return False
 
-            await asyncio.sleep(2)  # Wait for page to stabilize
+            logger.info("Navigation succeeded, waiting for page to stabilize...")
+            await asyncio.sleep(3)  # Increased wait for SPA hydration
+
+            # S1: Screenshot immediately after navigation
+            await self._take_debug_screenshot("S1_AFTER_NAVIGATION")
 
             # ============================================================
-            # DEBUG INSTRUMENTATION - DO NOT REMOVE UNTIL ISSUE IS RESOLVED
+            # STEP 2: Look for address input
             # ============================================================
             logger.info("=" * 60)
-            logger.info("DEBUG: Post-navigation instrumentation")
+            logger.info("STEP 2: Looking for address input...")
             logger.info("=" * 60)
-
-            # 1. Take screenshot
-            try:
-                screenshot_result = await self.client.call_tool("browser_screenshot", {})
-                if screenshot_result.success and screenshot_result.screenshot_base64:
-                    logger.info(f"DEBUG: Screenshot captured ({len(screenshot_result.screenshot_base64)} bytes base64)")
-                else:
-                    logger.warning("DEBUG: Screenshot failed")
-            except Exception as e:
-                logger.warning(f"DEBUG: Screenshot error: {e}")
-
-            # 2. Log page URL
-            try:
-                url_result = await self.client.call_tool(
-                    "browser_evaluate",
-                    {"script": "window.location.href"}
-                )
-                if url_result.success:
-                    logger.info(f"DEBUG: page.url() = {url_result.content}")
-                else:
-                    logger.warning(f"DEBUG: URL fetch failed: {url_result.error}")
-            except Exception as e:
-                logger.warning(f"DEBUG: URL error: {e}")
-
-            # 3. Log page title
-            try:
-                title_result = await self.client.call_tool(
-                    "browser_evaluate",
-                    {"script": "document.title"}
-                )
-                if title_result.success:
-                    logger.info(f"DEBUG: document.title = {title_result.content}")
-                else:
-                    logger.warning(f"DEBUG: Title fetch failed: {title_result.error}")
-            except Exception as e:
-                logger.warning(f"DEBUG: Title error: {e}")
-
-            # 4. Log body text (first 1500 chars)
-            try:
-                body_result = await self.client.call_tool(
-                    "browser_evaluate",
-                    {"script": "document.body ? document.body.innerText.slice(0, 1500) : 'NO BODY'"}
-                )
-                if body_result.success:
-                    logger.info(f"DEBUG: body text preview:\n{body_result.content}")
-                else:
-                    logger.warning(f"DEBUG: Body text fetch failed: {body_result.error}")
-            except Exception as e:
-                logger.warning(f"DEBUG: Body text error: {e}")
-
-            # 5. Count input elements
-            try:
-                input_count_result = await self.client.call_tool(
-                    "browser_evaluate",
-                    {"script": "document.querySelectorAll('input').length"}
-                )
-                if input_count_result.success:
-                    logger.info(f"DEBUG: input element count = {input_count_result.content}")
-                else:
-                    logger.warning(f"DEBUG: Input count failed: {input_count_result.error}")
-            except Exception as e:
-                logger.warning(f"DEBUG: Input count error: {e}")
-
-            logger.info("=" * 60)
-            logger.info("DEBUG: End instrumentation")
-            logger.info("=" * 60)
-            # ============================================================
 
             # Try to find and click address input
             address_input = await self._try_selectors(
                 SELECTORS["address_input"], action="click"
             )
+
+            # S2: Screenshot after address input attempt
+            await self._take_debug_screenshot("S2_AFTER_ADDRESS_INPUT_SEARCH")
+
             if not address_input:
-                logger.warning("Could not find address input")
-                # Address might already be set, continue
+                logger.warning("Could not find address input with primary selectors")
 
-            # Type address
-            if address_input:
-                await asyncio.sleep(0.5)
-                type_result = await self.client.fill(address_input, address)
-                if not type_result.success:
-                    logger.error(f"Failed to type address: {type_result.error}")
+                # Try clicking a "Deliver to" button first (common Uber Eats pattern)
+                logger.info("Trying 'Deliver to' button pattern...")
+                deliver_btn = await self._try_selectors([
+                    "button[data-testid='delivery-selector']",
+                    "[data-testid='delivery-address']",
+                    "button:has-text('Deliver')",
+                    "[aria-label*='delivery']",
+                    "[aria-label*='address']",
+                ], action="click")
+
+                if deliver_btn:
+                    logger.info(f"Clicked reveal button: {deliver_btn}")
+                    await asyncio.sleep(1)
+                    await self._take_debug_screenshot("S2B_AFTER_REVEAL_CLICK")
+
+                    # Try address input again
+                    address_input = await self._try_selectors(
+                        SELECTORS["address_input"], action="click"
+                    )
+
+                if not address_input:
+                    logger.error("Still could not find address input after reveal attempt")
+                    await self._take_debug_screenshot("S2C_ADDRESS_INPUT_NOT_FOUND")
                     return False
 
-                await asyncio.sleep(1.5)  # Wait for autocomplete
+            # ============================================================
+            # STEP 3: Type address
+            # ============================================================
+            logger.info("=" * 60)
+            logger.info(f"STEP 3: Typing address: {address}")
+            logger.info("=" * 60)
 
-                # Select first suggestion
-                suggestion = await self._try_selectors(
-                    SELECTORS["address_suggestion"], action="click"
-                )
-                if not suggestion:
-                    logger.warning("No address suggestions found")
+            await asyncio.sleep(0.5)
+            type_result = await self.client.fill(address_input, address)
+            if not type_result.success:
+                logger.error(f"Failed to type address: {type_result.error}")
+                await self._take_debug_screenshot("S3_TYPE_FAILED")
+                return False
+
+            logger.info("Address typed, waiting for autocomplete...")
+            await asyncio.sleep(2.5)  # Increased wait for autocomplete
+
+            # S3: Screenshot after typing address
+            await self._take_debug_screenshot("S3_AFTER_TYPING_ADDRESS")
+
+            # ============================================================
+            # STEP 4: Select autocomplete suggestion
+            # ============================================================
+            logger.info("=" * 60)
+            logger.info("STEP 4: Looking for autocomplete suggestions...")
+            logger.info("=" * 60)
+
+            # Try multiple suggestion selectors
+            suggestion = await self._try_selectors(
+                SELECTORS["address_suggestion"], action="click"
+            )
+
+            if not suggestion:
+                logger.warning("Primary suggestion selectors failed, trying alternatives...")
+                # Try alternative suggestion selectors
+                suggestion = await self._try_selectors([
+                    "li[role='option']",
+                    "[data-testid*='suggestion']",
+                    "[data-testid*='address']",
+                    ".autocomplete-suggestion",
+                    "[role='listbox'] > *",
+                ], action="click")
+
+            if not suggestion:
+                logger.warning("No suggestions found, trying Enter key...")
+                await self._take_debug_screenshot("S4_NO_SUGGESTIONS")
+
+                # Try pressing Enter as fallback
+                try:
+                    await self.client.call_tool("browser_press_key", {"key": "Enter"})
+                    await asyncio.sleep(1.5)
+                    await self._take_debug_screenshot("S4B_AFTER_ENTER_KEY")
+                except Exception as e:
+                    logger.warning(f"Enter key failed: {e}")
                     return False
-
+            else:
+                logger.info(f"Clicked suggestion: {suggestion}")
                 await asyncio.sleep(1)
 
+            # S4: Final screenshot after address selection
+            await self._take_debug_screenshot("S4_ADDRESS_COMPLETE")
+
+            logger.info("=" * 60)
+            logger.info("Address setup completed successfully!")
+            logger.info("=" * 60)
             return True
 
         except Exception as e:
             logger.exception(f"Setup location failed: {e}")
+            await self._take_debug_screenshot("ERROR_EXCEPTION")
             return False
 
     # ========================================================================
