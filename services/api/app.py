@@ -85,12 +85,13 @@ def create_app() -> FastAPI:
 
     # Lazy load heavy routers - these import Playwright/MCP
     # Import at function call time, not module load time
-    from .routes import workflow_router, resume_router
+    from .routes import workflow_router, resume_router, food_delivery_router
     from .routes.element_picker import router as element_picker_router
 
     app.include_router(workflow_router, prefix="/api")
     app.include_router(resume_router, prefix="/api")
     app.include_router(element_picker_router, prefix="/api")
+    app.include_router(food_delivery_router, prefix="/api")
 
     # Mount frontend static files
     frontend_path = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
