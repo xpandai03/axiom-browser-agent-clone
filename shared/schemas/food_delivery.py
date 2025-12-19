@@ -243,6 +243,11 @@ class DebugInfo(BaseModel):
         None,
         description="List of debug screenshots [{label, base64}]"
     )
+    nav_attempts: int = Field(default=1, description="Number of navigation attempts")
+    page_state_detected: Optional[str] = Field(
+        None,
+        description="Page state detected (healthy, navigation_stalled, bot_challenge_detected, etc.)"
+    )
 
 
 class FoodDeliveryMetadata(BaseModel):
@@ -266,7 +271,12 @@ FailureReason = Literal[
     "no_carts_meet_protein_and_price_constraints",
     "bot_detection_triggered",
     "rate_limited",
-    "unknown_error"
+    "unknown_error",
+    # Page state failures (cloud blocking)
+    "navigation_stalled",
+    "bot_challenge_detected",
+    "geo_selector_detected",
+    "page_degraded",
 ]
 
 

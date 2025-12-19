@@ -169,6 +169,9 @@ class PlaywrightRuntime:
         logger.info(f"Browser context created with viewport: {viewport_width}x{viewport_height}")
         self._page = await self._context.new_page()
 
+        # CRITICAL: Block heavy resources to prevent stalls on cloud IPs
+        await self._setup_resource_blocking(self._page)
+
         # Apply stealth patches if available and enabled (lazy load)
         if config.stealth_mode:
             stealth_func = _get_stealth_async()
@@ -178,6 +181,64 @@ class PlaywrightRuntime:
 
         self._page.set_default_timeout(30000)
         logger.info("Browser started successfully")
+
+    async def _setup_resource_blocking(self, page) -> None:
+        """Block fonts, images, media to prevent stalls on slow/blocked connections."""
+        async def block_resources(route):
+            resource_type = route.request.resource_type
+            # Block: fonts, images, media, stylesheets (keep: document, script, xhr, fetch)
+            if resource_type in ["font", "image", "media", "stylesheet"]:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        try:
+            await page.route("**/*", block_resources)
+            logger.info("Resource blocking enabled: fonts, images, media, stylesheets blocked")
+        except Exception as e:
+            logger.warning(f"Could not setup resource blocking: {e}")
+
+    async def _create_fresh_context(self) -> None:
+        """Create a fresh browser context and page (for retry with clean state)."""
+        # Close existing context/page if any
+        if self._page:
+            try:
+                await self._page.close()
+            except Exception:
+                pass
+            self._page = None
+
+        if self._context:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+
+        # Create new context with randomized viewport
+        viewport_width = 1920 + random.randint(-50, 50)
+        viewport_height = 1080 + random.randint(-30, 30)
+
+        context_kwargs = {
+            "viewport": {"width": viewport_width, "height": viewport_height},
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
+        self._context = await self._browser.new_context(**context_kwargs)
+        self._page = await self._context.new_page()
+
+        # Setup resource blocking on new page
+        await self._setup_resource_blocking(self._page)
+
+        # Apply stealth if available
+        if self._config and self._config.stealth_mode:
+            stealth_func = _get_stealth_async()
+            if stealth_func:
+                await stealth_func(self._page)
+
+        self._page.set_default_timeout(30000)
+        logger.info(f"Fresh context created with viewport: {viewport_width}x{viewport_height}")
 
     async def close(self) -> None:
         """Close the browser and cleanup."""
@@ -196,49 +257,61 @@ class PlaywrightRuntime:
 
         logger.info("Browser closed")
 
-    async def navigate(self, url: str, wait_until: str = "commit", timeout: int = 60000) -> Dict[str, Any]:
+    async def navigate(self, url: str, wait_until: str = "commit", timeout: int = 45000) -> Dict[str, Any]:
         """
         Navigate to a URL with robust retry logic.
 
-        Uses wait_until="commit" by default to avoid hanging on heavy SPAs.
-        Implements exponential backoff retry on failure.
+        Strategy:
+        1. Use wait_until="commit" to avoid hanging on SPA hydration
+        2. Fresh context per retry to avoid poisoned sessions
+        3. Readiness probe after navigation to detect degraded pages
+        4. Resource blocking already applied to prevent font/image stalls
         """
-        page = await self.ensure_browser()
-
-        # Phase 7: Set realistic referrer for stealth
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            domain = parsed.netloc
-
-            # Set referrer as if coming from Google search
-            referrer_headers = {
-                "Referer": f"https://www.google.com/search?q={domain}"
-            }
-            await page.set_extra_http_headers(referrer_headers)
-        except Exception as e:
-            logger.debug(f"Could not set referrer header: {e}")
-
-        # Retry with exponential backoff
         max_retries = 3
         last_error = None
 
         for attempt in range(max_retries):
-            # Add small random delay before navigation (human-like)
+            # Fresh context for each retry (avoids poisoned sessions)
             if attempt > 0:
                 backoff = (2 ** attempt) + random.uniform(0.5, 1.5)
-                logger.info(f"Retry {attempt + 1}/{max_retries} after {backoff:.1f}s backoff")
+                logger.info(f"Nav retry {attempt + 1}/{max_retries} with fresh context after {backoff:.1f}s")
                 await asyncio.sleep(backoff)
-            else:
-                await asyncio.sleep(random.uniform(0.3, 0.8))
+                try:
+                    await self._create_fresh_context()
+                except Exception as e:
+                    logger.error(f"Fresh context failed: {e}")
+                    continue
+
+            page = await self.ensure_browser()
+
+            # Set referrer for stealth
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+                await page.set_extra_http_headers({
+                    "Referer": f"https://www.google.com/search?q={domain}"
+                })
+            except Exception:
+                pass
+
+            # Small human-like delay
+            await asyncio.sleep(random.uniform(0.2, 0.5))
 
             try:
-                # Use "commit" to avoid hanging on SPA hydration
-                # Playwright "commit" waits only for network response, not for DOM/load events
+                # Navigate with commit-level wait (fastest, just waits for response)
+                logger.info(f"Navigating to {url} (attempt {attempt + 1}, wait={wait_until}, timeout={timeout}ms)")
                 response = await page.goto(url, wait_until=wait_until, timeout=timeout)
 
-                # Wait a bit for initial render
-                await asyncio.sleep(1.5)
+                # Brief pause for initial JS execution
+                await asyncio.sleep(1.0)
+
+                # READINESS PROBE: Check if page is alive with minimal selectors
+                is_ready = await self._check_page_readiness(page)
+
+                if not is_ready:
+                    logger.warning(f"Attempt {attempt + 1}: Page not ready (degraded/blocked)")
+                    last_error = "Page loaded but appears degraded or blocked"
+                    continue  # Try fresh context
 
                 # Auto-dismiss cookie banners
                 cookie_dismissed = await self._try_dismiss_cookies(page)
@@ -247,11 +320,13 @@ class PlaywrightRuntime:
                 if cookie_dismissed:
                     content += " (cookie banner dismissed)"
 
+                logger.info(f"Navigation successful on attempt {attempt + 1}")
                 return {
                     "success": True,
                     "content": content,
                     "status": response.status if response else None,
                     "cookie_dismissed": cookie_dismissed,
+                    "attempts": attempt + 1,
                 }
 
             except Exception as e:
@@ -259,28 +334,54 @@ class PlaywrightRuntime:
                 last_error = error_msg
                 logger.warning(f"Navigation attempt {attempt + 1} failed: {error_msg}")
 
-                # Check if page crashed - if so, try to recover browser
+                # On crash, we'll get fresh context on next iteration anyway
                 if "crashed" in error_msg.lower() or "closed" in error_msg.lower():
-                    logger.info("Page crashed, restarting browser...")
-                    try:
-                        await self.close()
-                        page = await self.ensure_browser()
-                    except Exception as restart_error:
-                        logger.error(f"Browser restart failed: {restart_error}")
-
-                # Check for timeout - might be blocked
-                if "timeout" in error_msg.lower():
-                    logger.warning("Timeout detected - site may be blocking or slow")
-                    # Try with even more lenient wait on next attempt
-                    wait_until = "commit"
-                    timeout = 90000
+                    logger.info("Page crashed - will use fresh context on retry")
 
         # All retries exhausted
         return {
             "success": False,
             "error": f"Navigation failed after {max_retries} attempts: {last_error}",
             "content": None,
+            "attempts": max_retries,
         }
+
+    async def _check_page_readiness(self, page, timeout_ms: int = 5000) -> bool:
+        """
+        Quick readiness probe - check if page has basic interactive elements.
+
+        Returns True if page appears functional, False if degraded/blocked.
+        """
+        # Minimal selectors that should exist on ANY working webpage
+        readiness_selectors = [
+            "body",           # Most basic - page has body
+            "a",              # Any link
+            "button",         # Any button
+            "input",          # Any input
+            "[role]",         # Any ARIA role
+        ]
+
+        try:
+            for selector in readiness_selectors:
+                try:
+                    element = await page.wait_for_selector(
+                        selector,
+                        timeout=timeout_ms,
+                        state="attached"
+                    )
+                    if element:
+                        logger.info(f"Readiness probe passed: found '{selector}'")
+                        return True
+                except Exception:
+                    continue
+
+            # No basic elements found
+            logger.warning("Readiness probe failed: no basic elements found")
+            return False
+
+        except Exception as e:
+            logger.warning(f"Readiness probe error: {e}")
+            return False
 
     async def _try_dismiss_cookies(self, page) -> bool:
         """Try to dismiss cookie consent banners with common selectors."""

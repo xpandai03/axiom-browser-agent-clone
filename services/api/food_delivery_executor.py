@@ -403,32 +403,43 @@ class FoodDeliveryExecutor:
 
         Returns:
         - "success" if location was set
-        - A failure reason string otherwise
+        - A failure reason string otherwise (must be valid FailureReason)
         """
         try:
             # Step 1: Navigate to Uber Eats
             logger.info("Step 1: Navigating to Uber Eats...")
             nav_result = await self.client.navigate("https://www.ubereats.com")
 
-            # Take screenshot immediately regardless of nav result
-            await self._take_debug_screenshot("S1_POST_NAVIGATION")
+            # Record navigation attempts in debug
+            self.debug.nav_attempts = getattr(nav_result, 'attempts', 1)
 
             if not nav_result.success:
-                logger.error(f"Navigation failed: {nav_result.error}")
+                logger.error(f"Navigation failed after {self.debug.nav_attempts} attempts: {nav_result.error}")
+                # DON'T screenshot on failure - page is stalled
                 return "uber_eats_unavailable"
 
-            # Wait for SPA to hydrate
-            logger.info("Waiting for page to stabilize...")
-            await asyncio.sleep(3)
+            # Navigation succeeded - now safe to take screenshot
+            logger.info("Navigation succeeded, waiting for page to stabilize...")
+            await asyncio.sleep(2)
 
-            # Step 2: Detect page state
+            # Step 2: Detect page state (this is our readiness check)
             logger.info("Step 2: Detecting page state...")
             page_state = await self._detect_page_state()
-            await self._take_debug_screenshot(f"S2_PAGE_STATE_{page_state.upper()}")
 
-            if page_state != "healthy":
-                logger.error(f"Page state is not healthy: {page_state}")
-                return page_state
+            # Only screenshot AFTER page state detection (page is responsive)
+            if page_state == "healthy":
+                await self._take_debug_screenshot("S2_PAGE_HEALTHY")
+            else:
+                # Page not healthy - try one screenshot but don't block on it
+                logger.warning(f"Page state: {page_state} - attempting diagnostic screenshot")
+                try:
+                    await asyncio.wait_for(
+                        self._take_debug_screenshot(f"S2_{page_state.upper()}"),
+                        timeout=3.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Screenshot timed out on unhealthy page")
+                return page_state  # Return the detected state as failure reason
 
             # Step 3: Find and activate address input
             logger.info("Step 3: Activating address input...")
