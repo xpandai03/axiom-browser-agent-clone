@@ -122,6 +122,12 @@ class PlaywrightRuntime:
         config = self._config
         proxy_config = config.proxy_config
 
+        # CRITICAL: Log proxy status for debugging
+        if proxy_config:
+            logger.info(f"🔐 PROXY ENABLED: server={proxy_config['server']}, user={proxy_config.get('username', 'none')[:4]}***")
+        else:
+            logger.warning("⚠️ PROXY DISABLED - Traffic going through datacenter IP! Set API_PROXY_ENABLED=true")
+
         logger.info(f"Starting Playwright browser (headless={self._headless}, stealth={config.stealth_mode}, proxy={proxy_config is not None})")
 
         async_playwright = pw['async_playwright']

@@ -2012,4 +2012,173 @@ Proceed by:
 A) summarizing the most likely root cause based on these logs,
 B) listing the experiments,
 C) implementing the minimal code changes,
-D) explaining exactly how to test and what success looks like.                   
+D) explaining exactly how to test and what success looks like.          
+                                                                                  
+⏺ Bash(git push)                                                                    
+  ⎿  To https://github.com/xpandai03/axiom-browser-agent-clone.git                  
+        0989527..a02f595  main -> main                                              
+                                                                                    
+⏺ D) Test Plan                                                                      
+                                                                                    
+  Changes Implemented                                                               
+                                                                                    
+  | Fix                 | File                              | Line                  
+                         | Description |                                            
+  |---------------------|-----------------------------------|-----------------------
+  -----------------------|-------------|                                            
+  | Schema crash        | food_delivery.py:261-275          | Added 4 new           
+  FailureReason literals           |             |                                  
+  | Resource blocking   | mcp_runtime.py:185-199            | Block                 
+  fonts/images/media/stylesheets         |             |                            
+  | Fresh context       | mcp_runtime.py:201-241            | New context per retry 
+  attempt                |             |                                            
+  | Readiness probe     | mcp_runtime.py:349-384            | Check for basic       
+  elements post-nav            |             |                                      
+  | Screenshot strategy | food_delivery_executor.py:416-442 | No screenshot on      
+  stall, timeout on unhealthy |             |                                       
+  | Debug metadata      | food_delivery.py:246-250          | nav_attempts,         
+  page_state_detected            |             |                                    
+                                                                                    
+  ---                                                                               
+  Test Plan                                                                         
+                                                                                    
+  Local Test:                                                                       
+  cd /Users/raunekpratap/Desktop/Axiom-Builder                                      
+  python -c "                                                                       
+  from shared.schemas.food_delivery import FailureReason, FoodDeliveryOutput        
+  print('FailureReason includes navigation_stalled:', 'navigation_stalled' in       
+  FailureReason.__args__)                                                           
+  "                                                                                 
+  Expected: True                                                                    
+                                                                                    
+  Railway Test:                                                                     
+  1. Wait for auto-deploy (or trigger manually)                                     
+  2. Click "Uber Eats Protein Finder" in UI                                         
+  3. Check Railway logs                                                             
+                                                                                    
+  ---                                                                               
+  Log Interpretation                                                                
+                                                                                    
+  | Log Pattern                          | Meaning                        | Failure 
+  Bucket      |                                                                     
+  |--------------------------------------|--------------------------------|---------
+  ------------|                                                                     
+  | Resource blocking enabled            | Fonts/images blocked           | ✅ Fix  
+  applied      |                                                                    
+  | Navigation successful on attempt 1   | First try worked               | ✅      
+  Healthy          |                                                                
+  | Nav retry 2/3 with fresh context     | Retrying with clean session    | ⚠️      
+  Partial block    |                                                                
+  | Readiness probe passed: found 'body' | Page is interactive            | ✅      
+  Normal           |                                                                
+  | Readiness probe failed               | Page loaded but empty/degraded | ❌      
+  Soft-blocked     |                                                                
+  | Navigation failed after 3 attempts   | All retries exhausted          | ❌      
+  Hard-blocked     |                                                                
+  | Page state: navigation_stalled       | No interactive elements        | ❌ Cloud
+   IP blocked |                                                                     
+  | Page state: bot_challenge_detected   | Captcha found                  | ❌ Need 
+  proxy       |                                                                     
+                                                                                    
+  ---                                                                               
+  Success Looks Like:                                                               
+                                                                                    
+  Resource blocking enabled: fonts, images, media, stylesheets blocked              
+  Navigating to https://www.ubereats.com (attempt 1, wait=commit, timeout=45000ms)  
+  Readiness probe passed: found 'body'                                              
+  Navigation successful on attempt 1                                                
+  Step 2: Detecting page state...                                                   
+  Found interactive element: [data-testid='location-selector']                      
+  📸 [S2_PAGE_HEALTHY] Screenshot captured                                          
+  Step 3: Activating address input...                                               
+                                                                                    
+  ---                                                                               
+  Failure Buckets:                                                                  
+                                                                                    
+  | failure_reason          | Cause                           | Next Action         
+      |                                                                             
+  |-------------------------|---------------------------------|---------------------
+  ----|                                                                             
+  | uber_eats_unavailable   | Network/timeout after 3 retries | Need proxy or VPN   
+      |                                                                             
+  | navigation_stalled      | Page empty/degraded             | Cloud IP            
+  soft-blocked   |                                                                  
+  | bot_challenge_detected  | Captcha present                 | Need residential    
+  proxy  |                                                                          
+  | geo_selector_detected   | Country selector                | Need US IP          
+      |                                                                             
+  | address_not_serviceable | Address flow failed             | Check S3/S4         
+  screenshots |                                                                     
+                                                                                    
+  ---                                                                               
+  Proxy Recommendation                                                              
+                                                                                    
+  If logs consistently show:                                                        
+  - Readiness probe failed OR                                                       
+  - navigation_stalled OR                                                           
+  - Navigation failed after 3 attempts                                              
+                                                                                    
+  Evidence confirms: Railway's datacenter IPs are flagged by Uber Eats. Options:    
+  1. Bright Data residential proxy (~$15/GB) - highest success                      
+  2. Smartproxy (~$12/GB) - good alternative                                        
+  3. Self-hosted proxy on residential VPS - cheapest long-term                      
+                                                                                    
+──────────────────         
+  2. Smartproxy (~$12/GB) - good alternative                                        
+  3. Self-hosted proxy on residential VPS - cheapest long-term                      
+                                                                                    
+> '/var/folders/gv/xmp8x3s966z72pr2ttcf6khc0000gn/T/TemporaryItems/NSIRD_screenc    
+aptureui_eorUIV/Screenshot 2025-12-18 at 7.39.11 PM.png''/var/folders/gv/xmp8x3s    
+966z72pr2ttcf6khc0000gn/T/TemporaryItems/NSIRD_screencaptureui_9aiC3i/Screenshot    
+ 2025-12-18 at 7.39.19 PM.png'You are debugging a Playwright-based browser          
+automation service deployed on Railway.                                             
+                                                                                    
+Context:                                                                            
+- The app scrapes Uber Eats using Playwright.                                       
+- Uber Eats is returning a degraded DOM with no interactive elements.               
+- Logs show: `navigation_stalled` and `Page state: navigation_stalled`.             
+- We added funds to IPRoyal residential proxies ($20 balance confirmed).            
+- Behavior did NOT change after adding funds.                                       
+- This strongly suggests traffic is still coming from a datacenter IP (Railway),    
+ not a residential proxy.                                                           
+                                                                                    
+What I need from you:                                                               
+1. Identify the most likely reasons a residential proxy is NOT actually being       
+used even though credentials exist.                                                 
+2. List the exact places in a Playwright setup where proxy configuration            
+commonly fails or is silently ignored.                                              
+3. Show a minimal, correct Playwright browser launch example using IPRoyal          
+residential proxies (with username/password auth).                                  
+4. Call out common mistakes specifically with:                                      
+   - Railway environment variables                                                  
+   - BrowserContext vs Browser-level proxy config                                   
+   - Per-request vs global proxy usage                                              
+5. Suggest a single definitive logging or test I can add to prove whether the       
+proxy is active.                                                                    
+                                                                                    
+Assume:                                                                             
+- Python Playwright                                                                 
+- Headless Chromium                                                                 
+- Proxy credentials are available as env vars                                       
+- No CAPTCHA is shown; Uber Eats silently degrades the page                         
+                                                                                    
+I am NOT asking for scraping advice — only for proxy wiring correctness.            
+No interactive elements found - page may be stalled or degraded                     
+Page state: navigation_stalled - attempting diagnostic screenshot                   
+Workflow completed: no valid carts (navigation_stalled)                             
+INFO:     100.64.0.5:48042 - "POST /api/food-delivery/run HTTP/1.1" 200 OK          
+INFO:     100.64.0.6:30588 - "GET / HTTP/1.1" 200 OK                                
+INFO:     100.64.0.6:30588 - "GET /static/styles.css HTTP/1.1" 200 OK               
+INFO:     100.64.0.6:30608 - "GET /static/main.js HTTP/1.1" 200 OK                  
+INFO:     100.64.0.6:30608 - "GET /favicon.ico HTTP/1.1" 404 Not Found              
+No interactive elements found - page may be stalled or degraded                     
+Page state: navigation_stalled - attempting diagnostic screenshot                   
+Workflow completed: no valid carts (navigation_stalled)                             
+INFO:     100.64.0.7:57016 - "POST /api/food-delivery/run HTTP/1.1" 200 OK          
+                                                                                    
+⏺ Let me check the current proxy configuration in the codebase to identify why it's 
+  not being used.                                                                   
+                                                                                    
+✢ Schlepping… (esc to interrupt · thought for 2s)                                   
+                                                                                    
+─────────────

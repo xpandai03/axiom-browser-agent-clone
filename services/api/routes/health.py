@@ -44,6 +44,8 @@ async def health_check():
             "openai_env_source": source,
             "stealth_mode": config.stealth_mode,
             "proxy_enabled": config.proxy_enabled,
+            "proxy_server": config.proxy_server[:30] + "..." if config.proxy_server else None,
+            "proxy_configured": config.proxy_config is not None,
         }
     except Exception as e:
         return {
