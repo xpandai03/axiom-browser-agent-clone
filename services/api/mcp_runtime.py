@@ -196,8 +196,13 @@ class PlaywrightRuntime:
 
         logger.info("Browser closed")
 
-    async def navigate(self, url: str) -> Dict[str, Any]:
-        """Navigate to a URL and auto-dismiss cookie banners."""
+    async def navigate(self, url: str, wait_until: str = "commit", timeout: int = 60000) -> Dict[str, Any]:
+        """
+        Navigate to a URL with robust retry logic.
+
+        Uses wait_until="commit" by default to avoid hanging on heavy SPAs.
+        Implements exponential backoff retry on failure.
+        """
         page = await self.ensure_browser()
 
         # Phase 7: Set realistic referrer for stealth
@@ -214,47 +219,67 @@ class PlaywrightRuntime:
         except Exception as e:
             logger.debug(f"Could not set referrer header: {e}")
 
-        # Add small random delay before navigation (human-like)
-        await asyncio.sleep(random.uniform(0.3, 0.8))
+        # Retry with exponential backoff
+        max_retries = 3
+        last_error = None
 
-        try:
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Navigation error to {url}: {error_msg}")
-
-            # Check if page crashed - if so, try to recover
-            if "crashed" in error_msg.lower() or "closed" in error_msg.lower():
-                logger.info("Page crashed, attempting browser restart...")
-                try:
-                    await self.close()
-                    page = await self.ensure_browser()
-                    response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                except Exception as retry_error:
-                    return {
-                        "success": False,
-                        "error": f"Page.goto: {error_msg}",
-                        "content": None,
-                    }
+        for attempt in range(max_retries):
+            # Add small random delay before navigation (human-like)
+            if attempt > 0:
+                backoff = (2 ** attempt) + random.uniform(0.5, 1.5)
+                logger.info(f"Retry {attempt + 1}/{max_retries} after {backoff:.1f}s backoff")
+                await asyncio.sleep(backoff)
             else:
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+
+            try:
+                # Use "commit" to avoid hanging on SPA hydration
+                # Playwright "commit" waits only for network response, not for DOM/load events
+                response = await page.goto(url, wait_until=wait_until, timeout=timeout)
+
+                # Wait a bit for initial render
+                await asyncio.sleep(1.5)
+
+                # Auto-dismiss cookie banners
+                cookie_dismissed = await self._try_dismiss_cookies(page)
+
+                content = f"Navigated to {url}"
+                if cookie_dismissed:
+                    content += " (cookie banner dismissed)"
+
                 return {
-                    "success": False,
-                    "error": f"Navigation failed: {error_msg}",
-                    "content": None,
+                    "success": True,
+                    "content": content,
+                    "status": response.status if response else None,
+                    "cookie_dismissed": cookie_dismissed,
                 }
 
-        # Auto-dismiss cookie banners
-        cookie_dismissed = await self._try_dismiss_cookies(page)
+            except Exception as e:
+                error_msg = str(e)
+                last_error = error_msg
+                logger.warning(f"Navigation attempt {attempt + 1} failed: {error_msg}")
 
-        content = f"Navigated to {url}"
-        if cookie_dismissed:
-            content += " (cookie banner dismissed)"
+                # Check if page crashed - if so, try to recover browser
+                if "crashed" in error_msg.lower() or "closed" in error_msg.lower():
+                    logger.info("Page crashed, restarting browser...")
+                    try:
+                        await self.close()
+                        page = await self.ensure_browser()
+                    except Exception as restart_error:
+                        logger.error(f"Browser restart failed: {restart_error}")
 
+                # Check for timeout - might be blocked
+                if "timeout" in error_msg.lower():
+                    logger.warning("Timeout detected - site may be blocking or slow")
+                    # Try with even more lenient wait on next attempt
+                    wait_until = "commit"
+                    timeout = 90000
+
+        # All retries exhausted
         return {
-            "success": True,
-            "content": content,
-            "status": response.status if response else None,
-            "cookie_dismissed": cookie_dismissed,
+            "success": False,
+            "error": f"Navigation failed after {max_retries} attempts: {last_error}",
+            "content": None,
         }
 
     async def _try_dismiss_cookies(self, page) -> bool:
@@ -389,17 +414,92 @@ class PlaywrightRuntime:
             "content": f"Typed into {selector}",
         }
 
-    async def screenshot(self) -> Dict[str, Any]:
-        """Take a screenshot and return as base64."""
-        page = await self.ensure_browser()
-        screenshot_bytes = await page.screenshot(type="jpeg", quality=80)
-        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+    async def screenshot(self, timeout: int = 10000) -> Dict[str, Any]:
+        """
+        Take a screenshot and return as base64.
 
-        return {
-            "success": True,
-            "content": "Screenshot captured",
-            "screenshot_base64": screenshot_base64,
-        }
+        Uses asyncio.wait_for to enforce timeout - avoids hanging on font loading.
+        """
+        page = await self.ensure_browser()
+
+        try:
+            # Wrap screenshot in a timeout to avoid hanging on font loading
+            screenshot_coro = page.screenshot(type="jpeg", quality=80)
+            screenshot_bytes = await asyncio.wait_for(screenshot_coro, timeout=timeout / 1000.0)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+            return {
+                "success": True,
+                "content": "Screenshot captured",
+                "screenshot_base64": screenshot_base64,
+            }
+        except asyncio.TimeoutError:
+            logger.warning(f"Screenshot timed out after {timeout}ms (likely font loading stall)")
+            # Try a fallback: clip to viewport only, which is faster
+            try:
+                screenshot_bytes = await asyncio.wait_for(
+                    page.screenshot(type="jpeg", quality=60, clip={"x": 0, "y": 0, "width": 1280, "height": 720}),
+                    timeout=5.0
+                )
+                screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                return {
+                    "success": True,
+                    "content": "Screenshot captured (fallback viewport clip)",
+                    "screenshot_base64": screenshot_base64,
+                }
+            except Exception:
+                return {
+                    "success": False,
+                    "error": "Screenshot timed out even with fallback",
+                    "content": None,
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Screenshot failed: {str(e)}",
+                "content": None,
+            }
+
+    async def screenshot_fast(self) -> Dict[str, Any]:
+        """
+        Take a fast screenshot with minimal waiting.
+
+        Useful for debugging when page may be stalled.
+        """
+        return await self.screenshot(timeout=5000)
+
+    async def probe_selector(self, selector: str, timeout: int = 3000) -> Dict[str, Any]:
+        """
+        Probe for a selector's existence without clicking.
+
+        Returns whether the element exists and is visible.
+        Useful for detecting page state (bot blocks, consent walls, etc.)
+        """
+        page = await self.ensure_browser()
+
+        try:
+            element = await page.wait_for_selector(selector, timeout=timeout, state="attached")
+            if element:
+                is_visible = await element.is_visible()
+                return {
+                    "success": True,
+                    "exists": True,
+                    "visible": is_visible,
+                    "content": f"Selector '{selector}' found (visible={is_visible})",
+                }
+            return {
+                "success": True,
+                "exists": False,
+                "visible": False,
+                "content": f"Selector '{selector}' not found",
+            }
+        except Exception:
+            return {
+                "success": True,
+                "exists": False,
+                "visible": False,
+                "content": f"Selector '{selector}' not found",
+            }
 
     async def wait_for(self, selector: str = None, timeout: int = 30000) -> Dict[str, Any]:
         """Wait for an element or duration."""
@@ -426,6 +526,23 @@ class PlaywrightRuntime:
             "success": True,
             "content": f"Scrolled {direction} by {scroll_amount}px",
         }
+
+    async def press_key(self, key: str) -> Dict[str, Any]:
+        """Press a keyboard key (Enter, ArrowDown, Escape, etc.)."""
+        page = await self.ensure_browser()
+
+        try:
+            await page.keyboard.press(key)
+            return {
+                "success": True,
+                "content": f"Pressed key: {key}",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to press key {key}: {str(e)}",
+                "content": None,
+            }
 
     async def scroll_to_element(self, selector: str) -> Dict[str, Any]:
         """Scroll to bring an element into view."""
@@ -1197,7 +1314,12 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
                 arguments.get("selector", ""),
                 arguments.get("text", "")
             ),
-            "browser_screenshot": lambda: runtime.screenshot(),
+            "browser_screenshot": lambda: runtime.screenshot(arguments.get("timeout", 10000)),
+            "browser_screenshot_fast": lambda: runtime.screenshot_fast(),
+            "browser_probe_selector": lambda: runtime.probe_selector(
+                arguments.get("selector", ""),
+                arguments.get("timeout", 3000)
+            ),
             "browser_wait_for": lambda: runtime.wait_for(
                 arguments.get("selector"),
                 arguments.get("timeout", 30000)
@@ -1205,6 +1327,9 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> "MCPToo
             "browser_scroll": lambda: runtime.scroll(
                 arguments.get("direction", "down"),
                 arguments.get("amount")
+            ),
+            "browser_press_key": lambda: runtime.press_key(
+                arguments.get("key", "Enter")
             ),
             "browser_file_upload": lambda: runtime.file_upload(
                 arguments.get("selector", ""),

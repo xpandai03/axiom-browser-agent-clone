@@ -239,6 +239,10 @@ class DebugInfo(BaseModel):
         None,
         description="Step where bot detection was triggered"
     )
+    debug_screenshots: Optional[List[dict]] = Field(
+        None,
+        description="List of debug screenshots [{label, base64}]"
+    )
 
 
 class FoodDeliveryMetadata(BaseModel):

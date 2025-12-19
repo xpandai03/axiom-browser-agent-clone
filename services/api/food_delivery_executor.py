@@ -8,12 +8,15 @@ Orchestrates the full browser automation workflow:
 4. Process nutrition data and estimate missing values
 5. Assemble valid carts meeting protein/price constraints
 6. Rank and return top 3 cart options
+
+IMPORTANT: This executor does NOT use browser_evaluate.
+All operations use: navigate, click, fill, type, screenshot, probe_selector, extract.
 """
 
 import asyncio
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime
 
 from shared.schemas.food_delivery import (
@@ -40,46 +43,111 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Uber Eats Selectors (may need periodic updates)
+# Uber Eats Selectors (organized by page state)
 # ============================================================================
 
-# These are example selectors - actual selectors need to be discovered
-# by inspecting Uber Eats website structure
-
 SELECTORS = {
-    # Location/Address
+    # -------------------------------------------------------------------------
+    # Bot/Geo/Consent Detection - check these first after navigation
+    # -------------------------------------------------------------------------
+    "bot_challenge": [
+        "iframe[src*='recaptcha']",
+        "iframe[src*='hcaptcha']",
+        ".cf-browser-verification",
+        "#challenge-running",
+        "[data-testid='challenge']",
+        "div[class*='captcha']",
+    ],
+    "geo_selector": [
+        "[data-testid='country-selector']",
+        "[data-testid='location-selector-country']",
+        "select[name='country']",
+        "[aria-label*='country']",
+        ".country-selector",
+    ],
+    "consent_wall": [
+        "[data-testid='cookie-banner']",
+        "#onetrust-banner-sdk",
+        ".cookie-consent",
+        "[aria-label*='cookie']",
+        ".gdpr-banner",
+    ],
+    "age_gate": [
+        "[data-testid='age-gate']",
+        ".age-verification",
+        "[aria-label*='age']",
+    ],
+
+    # -------------------------------------------------------------------------
+    # Location/Address - multiple variants for different Uber Eats layouts
+    # -------------------------------------------------------------------------
+    "address_reveal_button": [
+        # Button that reveals address input modal/dropdown
+        "[data-testid='location-selector']",
+        "button[aria-label*='delivery']",
+        "button[aria-label*='Deliver']",
+        "[data-testid='location-typeahead-trigger']",
+        "button:has-text('Deliver to')",
+        "[data-testid='address-container'] button",
+        "header button:has-text('Enter')",
+        # Mobile/compact layouts
+        "[data-testid='header-address-trigger']",
+    ],
     "address_input": [
         "input[data-testid='location-typeahead-input']",
         "input[placeholder*='Enter delivery address']",
+        "input[placeholder*='address']",
         "input[aria-label*='delivery address']",
+        "input[aria-label*='Address']",
         "#location-typeahead-input",
+        "input[data-testid='address-input']",
+        "[data-testid='location-typeahead'] input",
+        # Generic fallbacks
+        "input[type='text'][placeholder*='address']",
     ],
     "address_suggestion": [
         "[data-testid='location-typeahead-suggestion']",
+        "[data-testid='address-suggestion']",
         "[role='option']",
+        "li[role='option']",
+        "[data-testid*='suggestion']",
+        "[data-testid*='result']",
         ".autocomplete-item",
+        ".suggestion-item",
+        "[role='listbox'] li",
+        "[role='listbox'] > div",
     ],
     "address_confirm": [
         "button[data-testid='location-typeahead-confirm']",
         "button:has-text('Done')",
         "button:has-text('Save')",
+        "button:has-text('Confirm')",
+        "[data-testid='confirm-location-button']",
+    ],
+    "address_display": [
+        # Confirms address is set - look for truncated address text
+        "[data-testid='location-selector'] span",
+        "[data-testid='header-address']",
+        "header [data-testid*='address']",
     ],
 
+    # -------------------------------------------------------------------------
     # Search
+    # -------------------------------------------------------------------------
     "search_input": [
         "input[data-testid='search-input']",
         "input[placeholder*='Search']",
         "input[aria-label*='Search']",
-    ],
-    "search_submit": [
-        "button[data-testid='search-submit']",
-        "button[type='submit']",
+        "[data-testid='search-bar'] input",
     ],
 
+    # -------------------------------------------------------------------------
     # Restaurant results
+    # -------------------------------------------------------------------------
     "restaurant_card": [
         "[data-testid='store-card']",
         "a[href*='/store/']",
+        "[data-testid='feed-item']",
         ".restaurant-card",
     ],
     "restaurant_name": [
@@ -93,46 +161,15 @@ SELECTORS = {
         ".delivery-time",
     ],
 
+    # -------------------------------------------------------------------------
     # Menu items
+    # -------------------------------------------------------------------------
     "menu_item_card": [
         "[data-testid='menu-item']",
         "[data-testid='store-item']",
+        "[data-testid='item-card']",
         ".menu-item",
     ],
-    "menu_item_name": [
-        "[data-testid='item-title']",
-        "h3",
-        ".item-name",
-    ],
-    "menu_item_price": [
-        "[data-testid='item-price']",
-        "span[class*='price']",
-        ".item-price",
-    ],
-    "menu_item_description": [
-        "[data-testid='item-description']",
-        "p",
-        ".item-description",
-    ],
-
-    # Nutrition (if available)
-    "nutrition_section": [
-        "[data-testid='nutrition-info']",
-        ".nutrition-facts",
-        "[aria-label*='nutrition']",
-    ],
-    "nutrition_protein": [
-        "[data-testid='protein']",
-        "span:has-text('Protein')",
-        ".protein-value",
-    ],
-    "nutrition_calories": [
-        "[data-testid='calories']",
-        "span:has-text('Cal')",
-        ".calories-value",
-    ],
-
-    # Item modal
     "item_modal": [
         "[data-testid='item-modal']",
         "[role='dialog']",
@@ -141,14 +178,9 @@ SELECTORS = {
     "modal_close": [
         "[data-testid='modal-close']",
         "button[aria-label='Close']",
+        "button[aria-label='close']",
         ".close-button",
-    ],
-
-    # Bot detection
-    "captcha": [
-        "iframe[src*='recaptcha']",
-        "iframe[src*='hcaptcha']",
-        ".cf-browser-verification",
+        "[data-testid='close-button']",
     ],
 }
 
@@ -156,32 +188,22 @@ SELECTORS = {
 class FoodDeliveryExecutor:
     """
     Executes the food delivery workflow using browser automation.
+
+    This executor does NOT use browser_evaluate - all operations are done
+    through the available MCP tools: navigate, click, fill, type, screenshot,
+    probe_selector, extract, wait_for.
     """
 
     def __init__(self, mcp_client, headless: bool = True):
-        """
-        Initialize the executor.
-
-        Args:
-            mcp_client: MCP client for browser automation
-            headless: Whether to run browser in headless mode
-        """
         self.client = mcp_client
         self.headless = headless
         self.debug = DebugInfo()
         self._workflow_context: dict = {}
         self._start_time: float = 0
+        self._debug_screenshots: List[Dict[str, str]] = []
 
     async def execute(self, input_config: FoodDeliveryInput) -> FoodDeliveryOutput:
-        """
-        Execute the full food delivery workflow.
-
-        Args:
-            input_config: Workflow input configuration
-
-        Returns:
-            FoodDeliveryOutput with results or failure information
-        """
+        """Execute the full food delivery workflow."""
         self._start_time = time.time()
         constraints = FoodDeliveryConstraints(
             min_protein_grams=input_config.min_protein_grams,
@@ -190,15 +212,19 @@ class FoodDeliveryExecutor:
 
         try:
             # Phase A: Setup - Navigate and set location
-            logger.info("Phase A: Setting up location...")
-            success = await self._setup_location(input_config.delivery_address)
-            if not success:
-                return self._failure_output(
-                    input_config, constraints, "address_not_serviceable"
-                )
+            logger.info("=" * 70)
+            logger.info("PHASE A: SETUP - Navigate and set delivery location")
+            logger.info("=" * 70)
+
+            setup_result = await self._setup_location(input_config.delivery_address)
+            if setup_result != "success":
+                return self._failure_output(input_config, constraints, setup_result)
 
             # Phase B: Search - Find restaurants
-            logger.info("Phase B: Searching for restaurants...")
+            logger.info("=" * 70)
+            logger.info("PHASE B: SEARCH - Find high-protein restaurants")
+            logger.info("=" * 70)
+
             restaurant_urls = await self._search_restaurants(
                 input_config.search_terms,
                 input_config.max_restaurants
@@ -209,7 +235,10 @@ class FoodDeliveryExecutor:
                 )
 
             # Phase C: Extract - Scan menus
-            logger.info(f"Phase C: Extracting from {len(restaurant_urls)} restaurants...")
+            logger.info("=" * 70)
+            logger.info(f"PHASE C: EXTRACT - Scanning {len(restaurant_urls)} restaurants")
+            logger.info("=" * 70)
+
             restaurants = await self._extract_restaurants(
                 restaurant_urls,
                 input_config.max_items_per_restaurant
@@ -222,7 +251,10 @@ class FoodDeliveryExecutor:
                 )
 
             # Phase D: Process - Assemble and rank carts
-            logger.info("Phase D: Processing and ranking carts...")
+            logger.info("=" * 70)
+            logger.info("PHASE D: PROCESS - Assemble and rank carts")
+            logger.info("=" * 70)
+
             all_carts, total_items, items_with_protein = aggregate_all_carts(
                 restaurants, constraints
             )
@@ -236,7 +268,6 @@ class FoodDeliveryExecutor:
             self.debug.candidate_carts_generated = len(all_carts)
 
             if not all_carts:
-                # Find best attempt for debug info
                 self.debug.best_attempt = find_best_attempt(
                     restaurants,
                     constraints.min_protein_grams,
@@ -276,166 +307,311 @@ class FoodDeliveryExecutor:
 
         except Exception as e:
             logger.exception(f"Workflow execution failed: {e}")
-            return self._failure_output(
-                input_config, constraints, "unknown_error"
-            )
+            return self._failure_output(input_config, constraints, "unknown_error")
+
+    # ========================================================================
+    # Debug Utilities
+    # ========================================================================
+
+    async def _take_debug_screenshot(self, label: str) -> Optional[str]:
+        """Take a fast screenshot for debugging. Returns base64 or None."""
+        try:
+            result = await self.client.call_tool("browser_screenshot_fast", {})
+            if result.success and result.screenshot_base64:
+                self._debug_screenshots.append({
+                    "label": label,
+                    "base64": result.screenshot_base64
+                })
+                logger.info(f"📸 [{label}] Screenshot captured")
+                return result.screenshot_base64
+            else:
+                logger.warning(f"📸 [{label}] Failed: {result.error if hasattr(result, 'error') else 'unknown'}")
+        except Exception as e:
+            logger.warning(f"📸 [{label}] Error: {e}")
+        return None
+
+    async def _probe_selector(self, selector: str, timeout: int = 3000) -> bool:
+        """Probe if a selector exists and is visible."""
+        try:
+            result = await self.client.call_tool("browser_probe_selector", {
+                "selector": selector,
+                "timeout": timeout
+            })
+            return result.success and getattr(result, 'exists', False)
+        except Exception:
+            return False
+
+    async def _detect_page_state(self) -> str:
+        """
+        Detect the current page state after navigation.
+
+        Returns one of:
+        - "healthy": Normal Uber Eats page
+        - "bot_challenge_detected": Captcha/challenge
+        - "geo_selector_detected": Country selector blocking
+        - "consent_blocking": Cookie/GDPR wall
+        - "navigation_stalled": Page didn't load properly
+        """
+        logger.info("Detecting page state...")
+
+        # Check for bot challenges first
+        for selector in SELECTORS["bot_challenge"]:
+            if await self._probe_selector(selector, timeout=2000):
+                logger.warning(f"BOT CHALLENGE detected: {selector}")
+                return "bot_challenge_detected"
+
+        # Check for geo/country selector
+        for selector in SELECTORS["geo_selector"]:
+            if await self._probe_selector(selector, timeout=2000):
+                logger.warning(f"GEO SELECTOR detected: {selector}")
+                return "geo_selector_detected"
+
+        # Check for consent wall (but these can often be dismissed)
+        for selector in SELECTORS["consent_wall"]:
+            if await self._probe_selector(selector, timeout=2000):
+                logger.info(f"Consent wall detected: {selector} - will try to dismiss")
+                # Attempt to dismiss - navigation handler already tries this
+                break
+
+        # Check for age gate
+        for selector in SELECTORS["age_gate"]:
+            if await self._probe_selector(selector, timeout=2000):
+                logger.warning(f"AGE GATE detected: {selector}")
+                return "age_gate_blocking"
+
+        # Check if we can find ANY interactive element
+        any_interactive = False
+        for selector in SELECTORS["address_reveal_button"] + SELECTORS["address_input"]:
+            if await self._probe_selector(selector, timeout=2000):
+                any_interactive = True
+                logger.info(f"Found interactive element: {selector}")
+                break
+
+        if not any_interactive:
+            logger.warning("No interactive elements found - page may be stalled or degraded")
+            return "navigation_stalled"
+
+        return "healthy"
 
     # ========================================================================
     # Phase A: Setup
     # ========================================================================
 
-    async def _take_debug_screenshot(self, label: str) -> None:
-        """Take a screenshot and log it for debugging."""
-        try:
-            screenshot_result = await self.client.call_tool("browser_screenshot", {})
-            if screenshot_result.success and screenshot_result.screenshot_base64:
-                # Store in debug info for UI display
-                if not hasattr(self, '_debug_screenshots'):
-                    self._debug_screenshots = []
-                self._debug_screenshots.append({
-                    "label": label,
-                    "base64": screenshot_result.screenshot_base64
-                })
-                logger.info(f"DEBUG SCREENSHOT [{label}]: Captured ({len(screenshot_result.screenshot_base64)} bytes)")
-            else:
-                logger.warning(f"DEBUG SCREENSHOT [{label}]: Failed to capture")
-        except Exception as e:
-            logger.warning(f"DEBUG SCREENSHOT [{label}]: Error - {e}")
+    async def _setup_location(self, address: str) -> str:
+        """
+        Navigate to Uber Eats and set delivery location.
 
-    async def _setup_location(self, address: str) -> bool:
-        """Navigate to Uber Eats and set delivery location."""
+        Returns:
+        - "success" if location was set
+        - A failure reason string otherwise
+        """
         try:
-            # Navigate to Uber Eats
-            logger.info("=" * 60)
-            logger.info("STEP 1: Navigating to Uber Eats...")
-            logger.info("=" * 60)
-
+            # Step 1: Navigate to Uber Eats
+            logger.info("Step 1: Navigating to Uber Eats...")
             nav_result = await self.client.navigate("https://www.ubereats.com")
+
+            # Take screenshot immediately regardless of nav result
+            await self._take_debug_screenshot("S1_POST_NAVIGATION")
+
             if not nav_result.success:
                 logger.error(f"Navigation failed: {nav_result.error}")
-                await self._take_debug_screenshot("S1_NAV_FAILED")
-                return False
+                return "uber_eats_unavailable"
 
-            logger.info("Navigation succeeded, waiting for page to stabilize...")
-            await asyncio.sleep(3)  # Increased wait for SPA hydration
+            # Wait for SPA to hydrate
+            logger.info("Waiting for page to stabilize...")
+            await asyncio.sleep(3)
 
-            # S1: Screenshot immediately after navigation
-            await self._take_debug_screenshot("S1_AFTER_NAVIGATION")
+            # Step 2: Detect page state
+            logger.info("Step 2: Detecting page state...")
+            page_state = await self._detect_page_state()
+            await self._take_debug_screenshot(f"S2_PAGE_STATE_{page_state.upper()}")
 
-            # ============================================================
-            # STEP 2: Look for address input
-            # ============================================================
-            logger.info("=" * 60)
-            logger.info("STEP 2: Looking for address input...")
-            logger.info("=" * 60)
+            if page_state != "healthy":
+                logger.error(f"Page state is not healthy: {page_state}")
+                return page_state
 
-            # Try to find and click address input
-            address_input = await self._try_selectors(
-                SELECTORS["address_input"], action="click"
-            )
+            # Step 3: Find and activate address input
+            logger.info("Step 3: Activating address input...")
+            address_input_found = await self._activate_address_input()
 
-            # S2: Screenshot after address input attempt
-            await self._take_debug_screenshot("S2_AFTER_ADDRESS_INPUT_SEARCH")
+            if not address_input_found:
+                await self._take_debug_screenshot("S3_ADDRESS_INPUT_NOT_FOUND")
+                return "address_not_serviceable"
 
-            if not address_input:
-                logger.warning("Could not find address input with primary selectors")
+            await self._take_debug_screenshot("S3_ADDRESS_INPUT_ACTIVE")
 
-                # Try clicking a "Deliver to" button first (common Uber Eats pattern)
-                logger.info("Trying 'Deliver to' button pattern...")
-                deliver_btn = await self._try_selectors([
-                    "button[data-testid='delivery-selector']",
-                    "[data-testid='delivery-address']",
-                    "button:has-text('Deliver')",
-                    "[aria-label*='delivery']",
-                    "[aria-label*='address']",
-                ], action="click")
+            # Step 4: Type address
+            logger.info(f"Step 4: Typing address: {address}")
+            type_success = await self._type_address(address)
 
-                if deliver_btn:
-                    logger.info(f"Clicked reveal button: {deliver_btn}")
-                    await asyncio.sleep(1)
-                    await self._take_debug_screenshot("S2B_AFTER_REVEAL_CLICK")
+            if not type_success:
+                await self._take_debug_screenshot("S4_TYPE_FAILED")
+                return "address_not_serviceable"
 
-                    # Try address input again
-                    address_input = await self._try_selectors(
-                        SELECTORS["address_input"], action="click"
-                    )
+            await asyncio.sleep(2.5)  # Wait for autocomplete
+            await self._take_debug_screenshot("S4_AFTER_TYPING")
 
-                if not address_input:
-                    logger.error("Still could not find address input after reveal attempt")
-                    await self._take_debug_screenshot("S2C_ADDRESS_INPUT_NOT_FOUND")
-                    return False
+            # Step 5: Select address from suggestions (with keyboard fallback)
+            logger.info("Step 5: Selecting address...")
+            select_success = await self._select_address_suggestion()
 
-            # ============================================================
-            # STEP 3: Type address
-            # ============================================================
-            logger.info("=" * 60)
-            logger.info(f"STEP 3: Typing address: {address}")
-            logger.info("=" * 60)
+            await self._take_debug_screenshot("S5_AFTER_SELECTION")
 
-            await asyncio.sleep(0.5)
-            type_result = await self.client.fill(address_input, address)
-            if not type_result.success:
-                logger.error(f"Failed to type address: {type_result.error}")
-                await self._take_debug_screenshot("S3_TYPE_FAILED")
-                return False
+            if not select_success:
+                logger.warning("Could not select address through normal flow")
+                return "address_not_serviceable"
 
-            logger.info("Address typed, waiting for autocomplete...")
-            await asyncio.sleep(2.5)  # Increased wait for autocomplete
+            # Step 6: Verify address was set
+            logger.info("Step 6: Verifying address was set...")
+            await asyncio.sleep(2)
 
-            # S3: Screenshot after typing address
-            await self._take_debug_screenshot("S3_AFTER_TYPING_ADDRESS")
+            # Check if we can find search (indicates we're on the main feed)
+            for selector in SELECTORS["search_input"]:
+                if await self._probe_selector(selector, timeout=3000):
+                    logger.info("✅ Address appears to be set - search input visible")
+                    await self._take_debug_screenshot("S6_SUCCESS")
+                    return "success"
 
-            # ============================================================
-            # STEP 4: Select autocomplete suggestion
-            # ============================================================
-            logger.info("=" * 60)
-            logger.info("STEP 4: Looking for autocomplete suggestions...")
-            logger.info("=" * 60)
+            # Alternatively, check if address is displayed
+            for selector in SELECTORS["address_display"]:
+                if await self._probe_selector(selector, timeout=2000):
+                    logger.info("✅ Address appears in header")
+                    await self._take_debug_screenshot("S6_SUCCESS")
+                    return "success"
 
-            # Try multiple suggestion selectors
-            suggestion = await self._try_selectors(
-                SELECTORS["address_suggestion"], action="click"
-            )
-
-            if not suggestion:
-                logger.warning("Primary suggestion selectors failed, trying alternatives...")
-                # Try alternative suggestion selectors
-                suggestion = await self._try_selectors([
-                    "li[role='option']",
-                    "[data-testid*='suggestion']",
-                    "[data-testid*='address']",
-                    ".autocomplete-suggestion",
-                    "[role='listbox'] > *",
-                ], action="click")
-
-            if not suggestion:
-                logger.warning("No suggestions found, trying Enter key...")
-                await self._take_debug_screenshot("S4_NO_SUGGESTIONS")
-
-                # Try pressing Enter as fallback
-                try:
-                    await self.client.call_tool("browser_press_key", {"key": "Enter"})
-                    await asyncio.sleep(1.5)
-                    await self._take_debug_screenshot("S4B_AFTER_ENTER_KEY")
-                except Exception as e:
-                    logger.warning(f"Enter key failed: {e}")
-                    return False
-            else:
-                logger.info(f"Clicked suggestion: {suggestion}")
-                await asyncio.sleep(1)
-
-            # S4: Final screenshot after address selection
-            await self._take_debug_screenshot("S4_ADDRESS_COMPLETE")
-
-            logger.info("=" * 60)
-            logger.info("Address setup completed successfully!")
-            logger.info("=" * 60)
-            return True
+            logger.warning("Could not verify address was set")
+            await self._take_debug_screenshot("S6_VERIFICATION_FAILED")
+            return "address_not_serviceable"
 
         except Exception as e:
             logger.exception(f"Setup location failed: {e}")
             await self._take_debug_screenshot("ERROR_EXCEPTION")
-            return False
+            return "unknown_error"
+
+    async def _activate_address_input(self) -> bool:
+        """Find and click the address input, or reveal button first if needed."""
+
+        # First, try clicking address input directly
+        for selector in SELECTORS["address_input"]:
+            try:
+                result = await self.client.click(selector)
+                if result.success:
+                    logger.info(f"Clicked address input: {selector}")
+                    await asyncio.sleep(0.5)
+                    return True
+            except Exception:
+                continue
+
+        # If that failed, try clicking a reveal button first
+        logger.info("Address input not directly clickable, trying reveal buttons...")
+        for selector in SELECTORS["address_reveal_button"]:
+            try:
+                result = await self.client.click(selector)
+                if result.success:
+                    logger.info(f"Clicked reveal button: {selector}")
+                    await asyncio.sleep(1)
+
+                    # Now try address input again
+                    for input_selector in SELECTORS["address_input"]:
+                        try:
+                            result = await self.client.click(input_selector)
+                            if result.success:
+                                logger.info(f"Clicked address input after reveal: {input_selector}")
+                                await asyncio.sleep(0.5)
+                                return True
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        return False
+
+    async def _type_address(self, address: str) -> bool:
+        """Type the address into the active input field."""
+        for selector in SELECTORS["address_input"]:
+            try:
+                result = await self.client.fill(selector, address)
+                if result.success:
+                    logger.info(f"Typed address into: {selector}")
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _select_address_suggestion(self) -> bool:
+        """
+        Select an address from autocomplete suggestions.
+
+        Uses multiple strategies:
+        1. Click on visible suggestion element
+        2. Keyboard navigation (ArrowDown + Enter)
+        3. Just press Enter to submit
+        """
+
+        # Strategy 1: Try clicking a suggestion
+        logger.info("Trying to click suggestion...")
+        for selector in SELECTORS["address_suggestion"]:
+            try:
+                if await self._probe_selector(selector, timeout=2000):
+                    result = await self.client.click(selector)
+                    if result.success:
+                        logger.info(f"✅ Clicked suggestion: {selector}")
+                        await asyncio.sleep(1)
+
+                        # Check for confirm button
+                        for confirm in SELECTORS["address_confirm"]:
+                            try:
+                                if await self._probe_selector(confirm, timeout=1500):
+                                    await self.client.click(confirm)
+                                    logger.info(f"Clicked confirm: {confirm}")
+                            except Exception:
+                                pass
+
+                        return True
+            except Exception:
+                continue
+
+        # Strategy 2: Keyboard navigation
+        logger.info("No clickable suggestion found, trying keyboard navigation...")
+        try:
+            # Press ArrowDown to highlight first suggestion
+            await self.client.call_tool("browser_press_key", {"key": "ArrowDown"})
+            await asyncio.sleep(0.3)
+
+            # Press Enter to select
+            await self.client.call_tool("browser_press_key", {"key": "Enter"})
+            await asyncio.sleep(1)
+
+            logger.info("Sent ArrowDown + Enter")
+
+            # Check if it worked by looking for confirm or search
+            for confirm in SELECTORS["address_confirm"]:
+                if await self._probe_selector(confirm, timeout=1500):
+                    await self.client.click(confirm)
+                    return True
+
+            # If search appeared, we're good
+            for search in SELECTORS["search_input"]:
+                if await self._probe_selector(search, timeout=2000):
+                    return True
+
+        except Exception as e:
+            logger.warning(f"Keyboard navigation failed: {e}")
+
+        # Strategy 3: Just press Enter (maybe address is already valid)
+        logger.info("Final fallback: pressing Enter to submit...")
+        try:
+            await self.client.call_tool("browser_press_key", {"key": "Enter"})
+            await asyncio.sleep(2)
+
+            # Check result
+            for search in SELECTORS["search_input"]:
+                if await self._probe_selector(search, timeout=2000):
+                    return True
+        except Exception:
+            pass
+
+        return False
 
     # ========================================================================
     # Phase B: Search
@@ -450,81 +626,94 @@ class FoodDeliveryExecutor:
         all_urls: set = set()
 
         for term in search_terms:
-            logger.info(f"Searching for: {term}")
+            logger.info(f"Searching for: '{term}'")
             urls = await self._execute_search(term)
             all_urls.update(urls)
+            logger.info(f"Found {len(urls)} restaurants for '{term}', total unique: {len(all_urls)}")
 
             if len(all_urls) >= max_restaurants:
                 break
 
-            await asyncio.sleep(1)  # Delay between searches
+            await asyncio.sleep(1.5)
 
-        # Cap at max_restaurants
         result = list(all_urls)[:max_restaurants]
-        logger.info(f"Found {len(result)} unique restaurant URLs")
+        logger.info(f"Final: {len(result)} unique restaurant URLs")
         return result
 
     async def _execute_search(self, term: str) -> List[str]:
         """Execute a single search and extract restaurant URLs."""
         try:
-            # Find and use search input
-            search_input = await self._try_selectors(
-                SELECTORS["search_input"], action="click"
-            )
+            # Find search input
+            search_input = None
+            for selector in SELECTORS["search_input"]:
+                if await self._probe_selector(selector, timeout=3000):
+                    search_input = selector
+                    break
+
             if not search_input:
                 logger.warning("Could not find search input")
                 return []
 
-            # Clear and type search term
-            await self.client.fill(search_input, "")
+            # Click and fill search
+            await self.client.click(search_input)
             await asyncio.sleep(0.3)
+            await self.client.fill(search_input, "")
+            await asyncio.sleep(0.2)
             await self.client.fill(search_input, term)
             await asyncio.sleep(0.5)
 
-            # Submit search (press Enter or click submit)
+            # Submit search
             await self.client.call_tool("browser_press_key", {"key": "Enter"})
-            await asyncio.sleep(2)  # Wait for results
+            await asyncio.sleep(3)
 
-            # Scroll to load more results
+            # Scroll to load more
             await self._scroll_results()
 
             # Extract restaurant links
-            links = await self._extract_restaurant_links()
-            return links
+            return await self._extract_restaurant_links()
 
         except Exception as e:
             logger.exception(f"Search execution failed for '{term}': {e}")
             return []
 
     async def _scroll_results(self, max_scrolls: int = 5):
-        """Scroll search results to load lazy content."""
+        """Scroll to load lazy content."""
         for i in range(max_scrolls):
-            await self.client.call_tool("browser_scroll", {"direction": "down"})
-            await asyncio.sleep(0.8)
+            try:
+                await self.client.call_tool("browser_scroll", {"direction": "down"})
+                await asyncio.sleep(0.8)
+            except Exception:
+                break
 
     async def _extract_restaurant_links(self) -> List[str]:
-        """Extract restaurant URLs from search results page."""
+        """Extract restaurant URLs from current page using extract tool."""
         urls = []
 
         for selector in SELECTORS["restaurant_card"]:
             try:
                 result = await self.client.call_tool(
-                    "browser_extract_links",
-                    {"selector": selector}
+                    "browser_extract",
+                    {"selector": selector, "extract_mode": "href", "attribute": "href"}
                 )
                 if result.success and result.extracted_data:
-                    for link in result.extracted_data:
-                        # Filter for Uber Eats store URLs
-                        if isinstance(link, str) and "/store/" in link:
-                            if link.startswith("/"):
-                                link = f"https://www.ubereats.com{link}"
-                            urls.append(link)
-                    if urls:
-                        break
+                    data = result.extracted_data
+                    if isinstance(data, list):
+                        for link in data:
+                            if isinstance(link, str) and "/store/" in link:
+                                if link.startswith("/"):
+                                    link = f"https://www.ubereats.com{link}"
+                                urls.append(link)
+                    elif isinstance(data, str) and "/store/" in data:
+                        if data.startswith("/"):
+                            data = f"https://www.ubereats.com{data}"
+                        urls.append(data)
+
+                if urls:
+                    break
             except Exception:
                 continue
 
-        return list(set(urls))  # Dedupe
+        return list(set(urls))
 
     # ========================================================================
     # Phase C: Extract
@@ -541,22 +730,21 @@ class FoodDeliveryExecutor:
         for url in restaurant_urls:
             logger.info(f"Extracting from: {url}")
 
-            # Check for bot detection before each restaurant
-            if await self._detect_bot_block():
+            # Check for bot detection
+            page_state = await self._detect_page_state()
+            if page_state == "bot_challenge_detected":
                 self.debug.blocked_at_step = f"restaurant_{len(restaurants)}"
                 logger.warning("Bot detection triggered, stopping extraction")
                 break
 
-            restaurant = await self._extract_single_restaurant(
-                url, max_items_per_restaurant
-            )
+            restaurant = await self._extract_single_restaurant(url, max_items_per_restaurant)
             if restaurant:
                 restaurants.append(restaurant)
                 self.debug.restaurants_scanned += 1
             else:
                 self.debug.restaurants_skipped += 1
 
-            await asyncio.sleep(2)  # Delay between restaurants
+            await asyncio.sleep(2)
 
         return restaurants
 
@@ -567,27 +755,26 @@ class FoodDeliveryExecutor:
     ) -> Optional[ExtractedRestaurant]:
         """Extract menu items from a single restaurant."""
         try:
-            # Navigate to restaurant page
             nav_result = await self.client.navigate(url)
             if not nav_result.success:
                 logger.error(f"Failed to navigate to {url}")
                 return None
 
-            await asyncio.sleep(2)  # Wait for page load
+            await asyncio.sleep(2)
 
             # Extract restaurant name
-            name = await self._extract_text(SELECTORS["restaurant_name"])
+            name = await self._extract_first_text(SELECTORS["restaurant_name"])
             if not name:
                 name = "Unknown Restaurant"
 
             # Extract ETA
-            eta_text = await self._extract_text(SELECTORS["restaurant_eta"])
+            eta_text = await self._extract_first_text(SELECTORS["restaurant_eta"])
             eta_minutes = self._parse_eta(eta_text)
 
-            # Scroll to load full menu
+            # Scroll to load menu
             await self._scroll_results(max_scrolls=8)
 
-            # Extract menu items
+            # Extract menu items by clicking into them
             items = await self._extract_menu_items(max_items)
 
             # Process items (add protein estimation)
@@ -602,240 +789,133 @@ class FoodDeliveryExecutor:
 
         except Exception as e:
             logger.exception(f"Restaurant extraction failed: {e}")
-            return ExtractedRestaurant(
-                name="Unknown",
-                url=url,
-                items=[],
-                extraction_success=False,
-                extraction_error=str(e)
-            )
+            return None
 
-    async def _extract_menu_items(self, max_items: int) -> List[ExtractedMenuItem]:
-        """Extract menu items from the current restaurant page."""
-        items = []
-
-        # Get all menu item elements
-        for selector in SELECTORS["menu_item_card"]:
-            try:
-                # First extract item names and prices from the main page
-                item_data = await self._extract_items_from_page(selector, max_items)
-                if item_data:
-                    items.extend(item_data)
-                    break
-            except Exception as e:
-                logger.debug(f"Selector {selector} failed: {e}")
-                continue
-
-        return items[:max_items]
-
-    async def _extract_items_from_page(
-        self,
-        item_selector: str,
-        max_items: int
-    ) -> List[ExtractedMenuItem]:
-        """Extract item data from menu cards on the page."""
-        items = []
-
-        # Get item count
-        count_result = await self.client.call_tool(
-            "browser_evaluate",
-            {"script": f"document.querySelectorAll('{item_selector}').length"}
-        )
-
-        if not count_result.success:
-            return []
-
-        item_count = min(int(count_result.content or 0), max_items)
-
-        for i in range(item_count):
-            try:
-                # Extract name
-                name_script = f"""
-                    (() => {{
-                        const items = document.querySelectorAll('{item_selector}');
-                        if (items[{i}]) {{
-                            const nameEl = items[{i}].querySelector('h3, [data-testid="item-title"], .item-name');
-                            return nameEl ? nameEl.textContent.trim() : null;
-                        }}
-                        return null;
-                    }})()
-                """
-                name_result = await self.client.call_tool(
-                    "browser_evaluate", {"script": name_script}
-                )
-                name = name_result.content if name_result.success else None
-
-                if not name:
-                    continue
-
-                # Extract price
-                price_script = f"""
-                    (() => {{
-                        const items = document.querySelectorAll('{item_selector}');
-                        if (items[{i}]) {{
-                            const priceEl = items[{i}].querySelector('[data-testid="item-price"], .item-price, span[class*="price"]');
-                            return priceEl ? priceEl.textContent.trim() : null;
-                        }}
-                        return null;
-                    }})()
-                """
-                price_result = await self.client.call_tool(
-                    "browser_evaluate", {"script": price_script}
-                )
-                price_text = price_result.content if price_result.success else None
-                price = parse_price(price_text) if price_text else None
-
-                if price is None:
-                    continue
-
-                # Extract description (for protein estimation)
-                desc_script = f"""
-                    (() => {{
-                        const items = document.querySelectorAll('{item_selector}');
-                        if (items[{i}]) {{
-                            const descEl = items[{i}].querySelector('p, [data-testid="item-description"], .item-description');
-                            return descEl ? descEl.textContent.trim().substring(0, 300) : null;
-                        }}
-                        return null;
-                    }})()
-                """
-                desc_result = await self.client.call_tool(
-                    "browser_evaluate", {"script": desc_script}
-                )
-                description = desc_result.content if desc_result.success else None
-
-                # Get item URL (current page + item identifier)
-                url_script = f"""
-                    (() => {{
-                        const items = document.querySelectorAll('{item_selector}');
-                        if (items[{i}]) {{
-                            const link = items[{i}].closest('a') || items[{i}].querySelector('a');
-                            return link ? link.href : window.location.href + '#item-{i}';
-                        }}
-                        return window.location.href + '#item-{i}';
-                    }})()
-                """
-                url_result = await self.client.call_tool(
-                    "browser_evaluate", {"script": url_script}
-                )
-                item_url = url_result.content if url_result.success else f"#item-{i}"
-
-                # Try to get nutrition data if available
-                protein, calories = await self._try_extract_nutrition(item_selector, i)
-
-                items.append(ExtractedMenuItem(
-                    item_name=name,
-                    price=price,
-                    protein_grams=protein,
-                    calories=calories,
-                    description=description,
-                    url=item_url
-                ))
-
-            except Exception as e:
-                logger.debug(f"Failed to extract item {i}: {e}")
-                continue
-
-        return items
-
-    async def _try_extract_nutrition(
-        self,
-        item_selector: str,
-        index: int
-    ) -> Tuple[Optional[int], Optional[int]]:
-        """Try to extract nutrition info from menu item."""
-        # This depends heavily on Uber Eats showing nutrition data
-        # Many restaurants don't have it visible
-        protein = None
-        calories = None
-
-        try:
-            nutrition_script = f"""
-                (() => {{
-                    const items = document.querySelectorAll('{item_selector}');
-                    if (items[{index}]) {{
-                        const text = items[{index}].textContent;
-                        const proteinMatch = text.match(/(\\d+)\\s*g?\\s*protein/i);
-                        const calMatch = text.match(/(\\d+)\\s*(?:cal|calories)/i);
-                        return {{
-                            protein: proteinMatch ? parseInt(proteinMatch[1]) : null,
-                            calories: calMatch ? parseInt(calMatch[1]) : null
-                        }};
-                    }}
-                    return {{protein: null, calories: null}};
-                }})()
-            """
-            result = await self.client.call_tool(
-                "browser_evaluate", {"script": nutrition_script}
-            )
-            if result.success and result.content:
-                data = result.content
-                protein = data.get("protein")
-                calories = data.get("calories")
-        except Exception:
-            pass
-
-        return protein, calories
-
-    # ========================================================================
-    # Utility Methods
-    # ========================================================================
-
-    async def _try_selectors(
-        self,
-        selectors: List[str],
-        action: str = "click",
-        value: str = None
-    ) -> Optional[str]:
-        """Try multiple selectors until one works."""
-        for selector in selectors:
-            try:
-                if action == "click":
-                    result = await self.client.click(selector)
-                elif action == "fill":
-                    result = await self.client.fill(selector, value or "")
-                else:
-                    result = await self.client.call_tool(
-                        f"browser_{action}", {"selector": selector}
-                    )
-
-                if result.success:
-                    return selector
-            except Exception:
-                continue
-        return None
-
-    async def _extract_text(self, selectors: List[str]) -> Optional[str]:
+    async def _extract_first_text(self, selectors: List[str]) -> Optional[str]:
         """Extract text from first matching selector."""
         for selector in selectors:
             try:
                 result = await self.client.call_tool(
-                    "browser_extract_text",
-                    {"selector": selector, "max_length": 200}
+                    "browser_extract",
+                    {"selector": selector, "extract_mode": "text"}
                 )
                 if result.success and result.extracted_data:
                     text = result.extracted_data
-                    if isinstance(text, list):
-                        text = text[0] if text else None
-                    if text:
+                    if isinstance(text, list) and text:
+                        text = text[0]
+                    if isinstance(text, str) and text.strip():
                         return text.strip()
             except Exception:
                 continue
         return None
 
-    async def _detect_bot_block(self) -> bool:
-        """Check if bot detection has been triggered."""
-        for selector in SELECTORS["captcha"]:
+    async def _extract_menu_items(self, max_items: int) -> List[ExtractedMenuItem]:
+        """
+        Extract menu items from current restaurant page.
+
+        Since we can't use browser_evaluate, we use browser_extract to get
+        text content and browser_click to open item modals for details.
+        """
+        items = []
+
+        # First, get count of menu items
+        item_count = 0
+        for selector in SELECTORS["menu_item_card"]:
             try:
                 result = await self.client.call_tool(
-                    "browser_evaluate",
-                    {"script": f"document.querySelector('{selector}') !== null"}
+                    "browser_get_element_count",
+                    {"selector": selector}
                 )
                 if result.success and result.content:
-                    return True
+                    count = int(result.content) if isinstance(result.content, (int, str)) else 0
+                    if count > 0:
+                        item_count = min(count, max_items)
+                        logger.info(f"Found {count} menu items with selector: {selector}")
+                        break
             except Exception:
                 continue
-        return False
+
+        if item_count == 0:
+            logger.warning("No menu items found")
+            return []
+
+        # Extract items by getting text content of each
+        for selector in SELECTORS["menu_item_card"]:
+            try:
+                # Extract all item names
+                names_result = await self.client.call_tool(
+                    "browser_extract",
+                    {"selector": f"{selector} h3, {selector} [data-testid*='title']", "extract_mode": "text"}
+                )
+
+                # Extract all prices
+                prices_result = await self.client.call_tool(
+                    "browser_extract",
+                    {"selector": f"{selector} [data-testid*='price'], {selector} span[class*='price']", "extract_mode": "text"}
+                )
+
+                # Extract all descriptions
+                desc_result = await self.client.call_tool(
+                    "browser_extract",
+                    {"selector": f"{selector} p, {selector} [data-testid*='description']", "extract_mode": "text"}
+                )
+
+                # Extract all links
+                links_result = await self.client.call_tool(
+                    "browser_extract",
+                    {"selector": f"{selector} a, {selector}", "extract_mode": "href", "attribute": "href"}
+                )
+
+                names = names_result.extracted_data if names_result.success else []
+                prices = prices_result.extracted_data if prices_result.success else []
+                descs = desc_result.extracted_data if desc_result.success else []
+                links = links_result.extracted_data if links_result.success else []
+
+                if not isinstance(names, list):
+                    names = [names] if names else []
+                if not isinstance(prices, list):
+                    prices = [prices] if prices else []
+                if not isinstance(descs, list):
+                    descs = [descs] if descs else []
+                if not isinstance(links, list):
+                    links = [links] if links else []
+
+                # Combine into items
+                for i in range(min(len(names), max_items)):
+                    name = names[i] if i < len(names) else None
+                    price_text = prices[i] if i < len(prices) else None
+                    desc = descs[i] if i < len(descs) else None
+                    link = links[i] if i < len(links) else f"#item-{i}"
+
+                    if not name:
+                        continue
+
+                    price = parse_price(price_text) if price_text else None
+                    if price is None:
+                        continue
+
+                    items.append(ExtractedMenuItem(
+                        item_name=str(name).strip(),
+                        price=price,
+                        protein_grams=None,  # Will be estimated
+                        calories=None,
+                        description=str(desc).strip()[:300] if desc else None,
+                        url=link if link else f"#item-{i}"
+                    ))
+
+                if items:
+                    break
+
+            except Exception as e:
+                logger.debug(f"Menu extraction with {selector} failed: {e}")
+                continue
+
+        logger.info(f"Extracted {len(items)} menu items")
+        return items[:max_items]
+
+    # ========================================================================
+    # Utility Methods
+    # ========================================================================
 
     def _parse_eta(self, eta_text: Optional[str]) -> Optional[int]:
         """Parse ETA text into minutes."""
@@ -843,14 +923,12 @@ class FoodDeliveryExecutor:
             return None
 
         import re
-        # Look for patterns like "25-35 min", "30 min", "25–35"
         match = re.search(r'(\d+)(?:\s*[-–]\s*(\d+))?\s*min', eta_text, re.IGNORECASE)
         if match:
             low = int(match.group(1))
             high = int(match.group(2)) if match.group(2) else low
-            return (low + high) // 2  # Average
+            return (low + high) // 2
 
-        # Just a number
         match = re.search(r'(\d+)', eta_text)
         if match:
             return int(match.group(1))
@@ -861,10 +939,14 @@ class FoodDeliveryExecutor:
         self,
         input_config: FoodDeliveryInput,
         constraints: FoodDeliveryConstraints,
-        reason: FailureReason
+        reason: str
     ) -> FoodDeliveryOutput:
         """Create a failure output."""
         duration_ms = int((time.time() - self._start_time) * 1000)
+
+        # Attach debug screenshots
+        if self._debug_screenshots:
+            self.debug.debug_screenshots = self._debug_screenshots
 
         return FoodDeliveryOutput.failure(
             location=input_config.delivery_address,
@@ -883,15 +965,6 @@ async def run_food_delivery_workflow(
     mcp_client,
     input_config: FoodDeliveryInput
 ) -> FoodDeliveryOutput:
-    """
-    Run the food delivery workflow.
-
-    Args:
-        mcp_client: MCP client for browser automation
-        input_config: Workflow input configuration
-
-    Returns:
-        FoodDeliveryOutput with results
-    """
+    """Run the food delivery workflow."""
     executor = FoodDeliveryExecutor(mcp_client, headless=input_config.headless)
     return await executor.execute(input_config)
