@@ -67,7 +67,7 @@ class APIConfig(BaseSettings):
 
     # Proxy Configuration (user provides credentials via env vars)
     proxy_enabled: bool = False
-    proxy_server: Optional[str] = None      # e.g., "http://geo.iproyal.com:12321"
+    proxy_server: Optional[str] = None      # e.g., "geo.iproyal.com:12321" (host:port only)
     proxy_username: Optional[str] = None
     proxy_password: Optional[str] = None
     proxy_country: str = "us"               # Default to US for Uber Eats
@@ -81,13 +81,17 @@ class APIConfig(BaseSettings):
     @property
     def proxy_config(self) -> Optional[dict]:
         """
-        Get Playwright proxy config with EMBEDDED AUTH in URL.
+        Get Playwright proxy config using SOCKS5 protocol.
 
-        CRITICAL: Chromium does NOT support separate username/password fields
-        for HTTP proxies. This causes: net::ERR_PROXY_AUTH_UNSUPPORTED
+        WHY SOCKS5 INSTEAD OF HTTP:
+        - HTTP proxies require CONNECT method for HTTPS tunneling
+        - Chromium's HTTP proxy auth is broken (ERR_PROXY_AUTH_UNSUPPORTED)
+        - Even with embedded auth, HTTPS traffic times out through HTTP proxies
+        - SOCKS5 operates at TCP level, tunnels ALL traffic including HTTPS
+        - Chromium DOES support username/password auth for SOCKS5
 
-        FIX: Embed credentials directly in the proxy URL:
-        http://username:password@host:port
+        IPRoyal SOCKS5 port: 12321 (same as HTTP, protocol auto-detected)
+        Or explicit SOCKS5 port: 12322
 
         IPRoyal username format for geo + sticky session:
         username_country-us_session-mysession123
@@ -114,24 +118,18 @@ class APIConfig(BaseSettings):
 
         formatted_username = "_".join(username_parts)
 
-        # Normalize server: strip protocol if present
+        # Normalize server: strip any protocol prefix
         server = self.proxy_server
-        if server.startswith("http://"):
-            server = server[7:]
-        elif server.startswith("https://"):
-            server = server[8:]
+        for prefix in ["socks5://", "socks4://", "http://", "https://"]:
+            if server.startswith(prefix):
+                server = server[len(prefix):]
+                break
 
-        # URL-encode username and password (in case of special chars)
-        from urllib.parse import quote
-        encoded_user = quote(formatted_username, safe='')
-        encoded_pass = quote(self.proxy_password, safe='')
-
-        # CRITICAL: Embed auth in URL to avoid ERR_PROXY_AUTH_UNSUPPORTED
-        proxy_url = f"http://{encoded_user}:{encoded_pass}@{server}"
-
+        # SOCKS5 with separate username/password (Chromium supports this!)
         return {
-            "server": proxy_url
-            # NO username/password fields - auth is embedded in URL
+            "server": f"socks5://{server}",
+            "username": formatted_username,
+            "password": self.proxy_password,
         }
 
     @property
@@ -140,10 +138,11 @@ class APIConfig(BaseSettings):
         if not self.proxy_server:
             return None
         server = self.proxy_server
-        if server.startswith("http://"):
-            server = server[7:]
-        elif server.startswith("https://"):
-            server = server[8:]
+        # Strip any protocol prefix
+        for prefix in ["socks5://", "socks4://", "http://", "https://"]:
+            if server.startswith(prefix):
+                server = server[len(prefix):]
+                break
         # Remove port if present for cleaner logging
         return server.split(":")[0] if ":" in server else server
 
