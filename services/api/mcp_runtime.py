@@ -89,13 +89,16 @@ class PlaywrightRuntime:
     CRITICAL: No Playwright imports happen until ensure_browser() is called.
     """
 
-    def __init__(self):
+    def __init__(self, skip_proxy: bool = False, skip_resource_blocking: bool = False, skip_stealth: bool = False):
         self._playwright = None
         self._browser = None  # Type: Optional[Browser] - lazy typed
         self._context = None  # Type: Optional[BrowserContext] - lazy typed
         self._page = None     # Type: Optional[Page] - lazy typed
         self._headless = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
         self._config = None   # Lazy loaded on first use
+        self._skip_proxy = skip_proxy  # TN executor doesn't need proxy
+        self._skip_resource_blocking = skip_resource_blocking  # SPA sites need full resources
+        self._skip_stealth = skip_stealth  # Use own fingerprint patches instead of playwright-stealth
 
     async def ensure_browser(self) -> Page:
         """Ensure browser is running and return the page."""
@@ -108,13 +111,8 @@ class PlaywrightRuntime:
         delay = random.randint(min_ms, max_ms) / 1000
         await asyncio.sleep(delay)
 
-    async def _start_browser(self, skip_stealth: bool = False) -> None:
-        """
-        Start the Playwright browser with proxy support.
-
-        Args:
-            skip_stealth: If True, skip playwright-stealth patches (helps with some sites)
-        """
+    async def _start_browser(self) -> None:
+        """Start the Playwright browser with proxy support."""
         # Lazy load Playwright
         pw = _get_playwright()
         if not pw:
@@ -182,7 +180,9 @@ class PlaywrightRuntime:
             "args": launch_args,
         }
 
-        if proxy_config:
+        if self._skip_proxy:
+            logger.info("PROXY SKIPPED (skip_proxy=True) — direct connection for this workflow")
+        elif proxy_config:
             launch_kwargs["proxy"] = proxy_config
             # Don't log the full server URL - it contains embedded credentials!
             logger.info(f"🔐 PROXY ATTACHED TO chromium.launch() - host: {config.proxy_server_host}")
@@ -198,23 +198,39 @@ class PlaywrightRuntime:
         viewport_width = 1920 + random.randint(-50, 50)
         viewport_height = 1080 + random.randint(-30, 30)
 
+        # Use Linux UA to match actual navigator.platform on Railway (Linux)
+        # Chrome 131 is modern enough to avoid version-based detection
+        user_agent = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
         context_kwargs = {
             "viewport": {"width": viewport_width, "height": viewport_height},
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "user_agent": user_agent,
             "locale": "en-US",
             "timezone_id": "America/New_York",
         }
         self._context = await self._browser.new_context(**context_kwargs)
+
+        # ========================================================================
+        # FINGERPRINT HARDENING — inject at CONTEXT level before page creation
+        # ========================================================================
+        await self._inject_fingerprint_patches(self._context)
+
         self._page = await self._context.new_page()
 
-        # Block heavy resources
-        await self._setup_resource_blocking(self._page)
+        # Block heavy resources (skip for SPA sites that need full CSS/JS)
+        if self._skip_resource_blocking:
+            logger.info("Resource blocking SKIPPED — SPA mode")
+        else:
+            await self._setup_resource_blocking(self._page)
 
         # ========================================================================
         # STEP 4: CONDITIONALLY APPLY STEALTH
         # ========================================================================
-        if skip_stealth:
-            logger.info("⚠️ STEALTH SKIPPED (skip_stealth=True) - May help with Uber Eats")
+        if self._skip_stealth:
+            logger.info("STEALTH SKIPPED — using own fingerprint patches instead")
         elif config.stealth_mode:
             stealth_func = _get_stealth_async()
             if stealth_func:
@@ -222,7 +238,7 @@ class PlaywrightRuntime:
                 logger.info("Stealth mode applied")
 
         self._page.set_default_timeout(30000)
-        logger.info(f"Browser ready (viewport: {viewport_width}x{viewport_height})")
+        logger.info(f"Browser ready (viewport: {viewport_width}x{viewport_height}, UA: Linux Chrome 131)")
 
     # ========================================================================
     # STEP 1: OUTBOUND IP VERIFICATION (MANDATORY)
@@ -295,6 +311,122 @@ class PlaywrightRuntime:
         finally:
             logger.info("=" * 70)
 
+    async def _inject_fingerprint_patches(self, context) -> None:
+        """
+        Inject JavaScript patches at CONTEXT level to fix headless tells.
+
+        Uses context.add_init_script() so patches apply to ALL pages/frames
+        before any page JavaScript executes. Uses plain objects (no prototypes)
+        for maximum compatibility with headless Chrome.
+        """
+        fingerprint_script = """
+        (() => {
+            try {
+                // ==================== WEBDRIVER ====================
+                // Most critical: headless Chrome sets this to true
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                    configurable: true,
+                });
+
+                // ==================== PLUGINS (plain objects) ====================
+                const fakePlugins = [
+                    { name: 'Chrome PDF Plugin', description: 'Portable Document Format', filename: 'internal-pdf-viewer', length: 1 },
+                    { name: 'Chrome PDF Viewer', description: '', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', length: 1 },
+                    { name: 'Native Client', description: '', filename: 'internal-nacl-plugin', length: 2 },
+                ];
+                const fakePluginArray = {
+                    length: fakePlugins.length,
+                    item: (i) => fakePlugins[i] || null,
+                    namedItem: (name) => fakePlugins.find(p => p.name === name) || null,
+                    refresh: () => {},
+                    0: fakePlugins[0],
+                    1: fakePlugins[1],
+                    2: fakePlugins[2],
+                    [Symbol.iterator]: function*() { yield* fakePlugins; }
+                };
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => fakePluginArray,
+                    configurable: true,
+                });
+
+                // ==================== MIMETYPES ====================
+                const fakeMimeTypes = [
+                    { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                    { type: 'application/pdf', suffixes: 'pdf', description: '' },
+                    { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' },
+                    { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' },
+                ];
+                const fakeMimeTypeArray = {
+                    length: fakeMimeTypes.length,
+                    item: (i) => fakeMimeTypes[i] || null,
+                    namedItem: (type) => fakeMimeTypes.find(m => m.type === type) || null,
+                    0: fakeMimeTypes[0],
+                    1: fakeMimeTypes[1],
+                    2: fakeMimeTypes[2],
+                    3: fakeMimeTypes[3],
+                    [Symbol.iterator]: function*() { yield* fakeMimeTypes; }
+                };
+                Object.defineProperty(navigator, 'mimeTypes', {
+                    get: () => fakeMimeTypeArray,
+                    configurable: true,
+                });
+
+                // ==================== HARDWARE ====================
+                Object.defineProperty(navigator, 'hardwareConcurrency', {
+                    get: () => 4,
+                    configurable: true,
+                });
+
+                // ==================== WEBGL ====================
+                if (typeof WebGLRenderingContext !== 'undefined') {
+                    const origGetParam = WebGLRenderingContext.prototype.getParameter;
+                    WebGLRenderingContext.prototype.getParameter = function(param) {
+                        if (param === 0x9245) return 'Intel Inc.';
+                        if (param === 0x9246) return 'Intel Iris OpenGL Engine';
+                        return origGetParam.call(this, param);
+                    };
+                }
+                if (typeof WebGL2RenderingContext !== 'undefined') {
+                    const origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
+                    WebGL2RenderingContext.prototype.getParameter = function(param) {
+                        if (param === 0x9245) return 'Intel Inc.';
+                        if (param === 0x9246) return 'Intel Iris OpenGL Engine';
+                        return origGetParam2.call(this, param);
+                    };
+                }
+
+                // ==================== CHROME OBJECT ====================
+                if (!window.chrome) window.chrome = {};
+                if (!window.chrome.runtime) {
+                    window.chrome.runtime = {
+                        connect: () => {},
+                        sendMessage: () => {},
+                        id: undefined
+                    };
+                }
+
+                // ==================== PERMISSIONS ====================
+                if (navigator.permissions && navigator.permissions.query) {
+                    const origQuery = navigator.permissions.query.bind(navigator.permissions);
+                    navigator.permissions.query = (params) => (
+                        params.name === 'notifications'
+                            ? Promise.resolve({ state: Notification.permission })
+                            : origQuery(params)
+                    );
+                }
+            } catch (e) {
+                // Silent fail — don't break the page
+            }
+        })();
+        """
+
+        try:
+            await context.add_init_script(fingerprint_script)
+            logger.info("Fingerprint patches injected at context level (plugins, WebGL, chrome, permissions)")
+        except Exception as e:
+            logger.warning(f"Failed to inject fingerprint patches: {e}")
+
     async def _setup_resource_blocking(self, page) -> None:
         """Block fonts, images, media to prevent stalls on slow/blocked connections."""
         async def block_resources(route):
@@ -332,17 +464,29 @@ class PlaywrightRuntime:
         viewport_width = 1920 + random.randint(-50, 50)
         viewport_height = 1080 + random.randint(-30, 30)
 
+        user_agent = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        )
+
         context_kwargs = {
             "viewport": {"width": viewport_width, "height": viewport_height},
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "user_agent": user_agent,
             "locale": "en-US",
             "timezone_id": "America/New_York",
         }
         self._context = await self._browser.new_context(**context_kwargs)
+
+        # Fingerprint patches at context level before page creation
+        await self._inject_fingerprint_patches(self._context)
+
         self._page = await self._context.new_page()
 
         # Setup resource blocking on new page
-        await self._setup_resource_blocking(self._page)
+        if self._skip_resource_blocking:
+            pass  # SPA mode — no resource blocking
+        else:
+            await self._setup_resource_blocking(self._page)
 
         # Apply stealth if available
         if self._config and self._config.stealth_mode:

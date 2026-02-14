@@ -1,0 +1,6 @@
+browser-agent-design/
+.next/
+node_modules/
+*.zip
+screenshots/
+.git/

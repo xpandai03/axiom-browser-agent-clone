@@ -1,7 +1,7 @@
 import os
 import logging
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,67 @@ class APIConfig(BaseSettings):
         """Get the env var name that provided the OpenAI key."""
         _, source = get_openai_api_key()
         return source
+
+
+# ============================================================================
+# TherapyNotes Credentials (loaded from THERAPYNOTES_* env vars)
+# ============================================================================
+
+class TNCredentials(BaseSettings):
+    """
+    TherapyNotes service account credentials.
+
+    Loaded from environment variables with THERAPYNOTES_ prefix.
+    All three fields are required — the executor will refuse to start
+    if any are missing.
+    """
+
+    practice_code: str = Field(
+        ...,
+        min_length=1,
+        description="TherapyNotes practice code",
+    )
+    username: str = Field(
+        ...,
+        min_length=1,
+        description="TherapyNotes service account username/email",
+    )
+    password: str = Field(
+        ...,
+        min_length=1,
+        description="TherapyNotes service account password",
+    )
+
+    class Config:
+        env_prefix = "THERAPYNOTES_"
+        env_file = ".env"
+        extra = "ignore"
+
+    @property
+    def safe_display(self) -> str:
+        """Credential summary safe for logging (no secrets)."""
+        masked_user = (
+            f"{self.username[:3]}***" if len(self.username) > 3 else "***"
+        )
+        return f"practice={self.practice_code}, user={masked_user}"
+
+
+_cached_tn_credentials: Optional[TNCredentials] = None
+
+
+def get_tn_credentials() -> TNCredentials:
+    """
+    Load and cache TN credentials from environment.
+
+    Raises pydantic ValidationError if any required field is missing.
+    """
+    global _cached_tn_credentials
+    if _cached_tn_credentials is None:
+        _cached_tn_credentials = TNCredentials()  # type: ignore[call-arg]
+        logger.info(
+            f"TherapyNotes credentials loaded: {_cached_tn_credentials.safe_display}"
+        )
+    return _cached_tn_credentials
 
 
 def get_config() -> APIConfig:
