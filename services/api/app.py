@@ -80,6 +80,28 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # API key middleware for /api/tn/* routes
+    tn_api_key = os.environ.get("TN_API_KEY")
+
+    @app.middleware("http")
+    async def tn_api_key_middleware(request, call_next):
+        path = request.url.path
+        if path.startswith("/api/tn") and path != "/api/tn/test":
+            if not tn_api_key:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": "TN_API_KEY not configured on server"},
+                )
+            provided_key = request.headers.get("X-API-Key")
+            if provided_key != tn_api_key:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Missing or invalid API key"},
+                )
+        return await call_next(request)
+
     # CRITICAL: Include health router FIRST - it has zero heavy dependencies
     app.include_router(health_router)
 

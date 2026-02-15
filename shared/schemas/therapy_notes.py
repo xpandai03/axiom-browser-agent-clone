@@ -158,6 +158,14 @@ class TNExecutorOutput(BaseModel):
         ge=0,
         description="Total execution time in milliseconds",
     )
+    tn_patient_url: Optional[str] = Field(
+        None,
+        description="TherapyNotes URL for the created patient (on success)",
+    )
+    tn_patient_id: Optional[str] = Field(
+        None,
+        description="TherapyNotes patient ID extracted from URL (on success)",
+    )
     created_at: datetime = Field(
         default_factory=datetime.utcnow,
     )
@@ -168,6 +176,8 @@ class TNExecutorOutput(BaseModel):
         patient_name: str,
         logs: List[TNPhaseLog],
         duration_ms: int,
+        tn_patient_url: Optional[str] = None,
+        tn_patient_id: Optional[str] = None,
     ) -> "TNExecutorOutput":
         return cls(
             status="success",
@@ -178,6 +188,8 @@ class TNExecutorOutput(BaseModel):
                 if log.screenshot_path is not None
             ],
             duration_ms=duration_ms,
+            tn_patient_url=tn_patient_url,
+            tn_patient_id=tn_patient_id,
         )
 
     @classmethod

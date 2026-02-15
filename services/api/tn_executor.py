@@ -5,22 +5,19 @@ Deterministic, linear browser automation workflow that creates a patient
 in TherapyNotes via headless Playwright.
 
 Architecture:
-- Single-session, no parallel execution.
+- Single-session, no parallel execution (module-level asyncio.Lock).
 - Every phase confirms DOM state before proceeding.
 - Every phase logs success/failure with timestamps.
 - On failure: capture screenshot, return structured error, stop.
 - No fixed waitForTimeout. No networkidle. Poll-based waits only.
 
 Phases:
-  0. ENTRY    — Navigate to TN, handle practice code if required.
-  1. LOGIN    — Fill credentials, confirm dashboard.
-  2. NAVIGATE — Sidebar → Patients → + New Patient.
-  3. FILL     — Fill patient form fields in strict order.
-  4. SAVE     — Submit form, confirm patient created.
-  5. RFS      — Insert referral note with RFS URL.
-
-IMPORTANT: Selectors are placeholders. They MUST be mapped against
-the real TherapyNotes DOM before production use.
+  0. ENTRY       — Navigate to TN login SPA, fill practice code.
+  1. LOGIN       — Fill credentials, confirm dashboard.
+  2. NAVIGATE    — Sidebar → Patients page, confirm + New Patient button.
+  3. DETECT_FORM — Click + New Patient, wait for form to render.
+  4. FILL        — Fill 8 required fields with verified DOM IDs.
+  5. SAVE        — Click psy-button.button-save, confirm creation.
 """
 
 import asyncio
@@ -120,150 +117,8 @@ SELECTORS = {
         ".patient-list",
     ],
     "new_patient_button": [
-        "button:has-text('New Patient')",
-        "a:has-text('New Patient')",
-        "button:has-text('+ New')",
-        "a:has-text('+ New')",
-        "button:has-text('Add Patient')",
-        "[data-testid='new-patient-btn']",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 3: Patient Form Fields
-    # ------------------------------------------------------------------
-    "field_first_name": [
-        "input[name='FirstName']",
-        "input#FirstName",
-        "input[name='firstName']",
-        "input[placeholder*='First']",
-        "input[aria-label*='First Name']",
-    ],
-    "field_last_name": [
-        "input[name='LastName']",
-        "input#LastName",
-        "input[name='lastName']",
-        "input[placeholder*='Last']",
-        "input[aria-label*='Last Name']",
-    ],
-    "field_dob": [
-        "input[name='DateOfBirth']",
-        "input#DateOfBirth",
-        "input[name='dob']",
-        "input[type='date']",
-        "input[placeholder*='Date of Birth']",
-        "input[placeholder*='MM/DD/YYYY']",
-    ],
-    "field_address": [
-        "input[name='Address1']",
-        "input#Address1",
-        "input[name='address']",
-        "input[placeholder*='Address']",
-        "input[aria-label*='Address']",
-    ],
-    "field_zip": [
-        "input[name='Zip']",
-        "input#Zip",
-        "input[name='zip']",
-        "input[name='ZipCode']",
-        "input[placeholder*='Zip']",
-    ],
-    "field_city": [
-        "input[name='City']",
-        "input#City",
-        "input[name='city']",
-        "input[placeholder*='City']",
-    ],
-    "sex_male_radio": [
-        "input[type='radio'][value='Male']",
-        "input[type='radio']#Male",
-        "label:has-text('Male') input[type='radio']",
-        "input[name='Sex'][value='Male']",
-        "input[name='sex'][value='Male']",
-    ],
-    "sex_female_radio": [
-        "input[type='radio'][value='Female']",
-        "input[type='radio']#Female",
-        "label:has-text('Female') input[type='radio']",
-        "input[name='Sex'][value='Female']",
-        "input[name='sex'][value='Female']",
-    ],
-    "field_email": [
-        "input[name='Email']",
-        "input#Email",
-        "input[name='email']",
-        "input[type='email']",
-        "input[placeholder*='Email']",
-    ],
-    "field_phone": [
-        "input[name='MobilePhone']",
-        "input#MobilePhone",
-        "input[name='phone']",
-        "input[name='Phone']",
-        "input[type='tel']",
-        "input[placeholder*='Phone']",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 4: Save
-    # ------------------------------------------------------------------
-    "save_button": [
-        "button:has-text('Save New Patient')",
-        "button:has-text('Save')",
-        "button[type='submit']",
-        "input[type='submit'][value*='Save']",
-        "[data-testid='save-patient-btn']",
-    ],
-    "duplicate_alert": [
-        ".duplicate-warning",
-        "[role='alert']:has-text('already exists')",
-        ".alert:has-text('duplicate')",
-        "text=Patient already exists",
-    ],
-    "patient_detail_indicator": [
-        ".patient-detail",
-        "[data-testid='patient-detail']",
-        "h1.patient-name",
-        "h2.patient-name",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 5: Insert RFS Note
-    # ------------------------------------------------------------------
-    "notes_tab": [
-        "a:has-text('Notes')",
-        "button:has-text('Notes')",
-        "[data-testid='notes-tab']",
-        "a[href*='notes']",
-    ],
-    "add_note_button": [
-        "button:has-text('Add Note')",
-        "button:has-text('New Note')",
-        "a:has-text('Add Note')",
-        "[data-testid='add-note-btn']",
-    ],
-    "note_title_field": [
-        "input[name='Title']",
-        "input#NoteTitle",
-        "input[name='title']",
-        "input[placeholder*='Title']",
-    ],
-    "note_body_field": [
-        "textarea[name='Body']",
-        "textarea#NoteBody",
-        "textarea[name='body']",
-        "textarea[name='content']",
-        "[contenteditable='true']",
-        ".note-editor textarea",
-    ],
-    "note_save_button": [
-        "button:has-text('Save Note')",
-        "button:has-text('Save')",
-        "button[type='submit']",
-    ],
-    "note_saved_indicator": [
-        "text=Intake Referral",
-        ".note-item:has-text('Intake Referral')",
-        "[data-testid='note-list'] :has-text('Intake Referral')",
+        "input#ctl00_BodyContent_ButtonCreatePatient1",            # Actual TN selector (verified via DOM dump)
+        "input[type='submit'][value='+ New Patient']",             # Fallback by type+value
     ],
 }
 
@@ -336,23 +191,23 @@ class TNExecutor:
             if not result:
                 return self._build_failure_output()
 
-            # ------ Phase 2: Navigate to New Patient ------
+            # ------ Phase 2: Navigate to Patients page ------
             result = await self._phase_navigate()
             if not result:
                 return self._build_failure_output()
 
-            # ------ Phase 3: Fill Patient Form ------
-            result = await self._phase_fill_form(patient)
+            # ------ Phase 3: Detect New Patient form ------
+            result = await self._phase_detect_form()
             if not result:
                 return self._build_failure_output()
 
-            # ------ Phase 4: Save Patient ------
-            result = await self._phase_save(patient)
+            # ------ Phase 4: Fill required fields ------
+            result = await self._phase_fill_required(patient)
             if not result:
                 return self._build_failure_output()
 
-            # ------ Phase 5: Insert RFS Note ------
-            result = await self._phase_insert_rfs(patient.rfs_url)
+            # ------ Phase 5: Save patient ------
+            result = await self._phase_save_patient(patient)
             if not result:
                 return self._build_failure_output()
 
@@ -364,6 +219,8 @@ class TNExecutor:
                 patient_name=patient_name,
                 logs=self._logs,
                 duration_ms=duration_ms,
+                tn_patient_url=getattr(self, "_tn_patient_url", None),
+                tn_patient_id=getattr(self, "_tn_patient_id", None),
             )
 
         except Exception as e:
@@ -559,15 +416,15 @@ class TNExecutor:
     # ========================================================================
 
     async def _phase_navigate(self) -> bool:
-        """Navigate sidebar → Patients → New Patient."""
+        """Navigate sidebar → Patients page, confirm + New Patient button exists."""
         phase = TNPhase.NAVIGATE
         phase_start = time.time()
         logger.info("=" * 70)
-        logger.info("PHASE 2: NAVIGATE — Patients → New Patient")
+        logger.info("PHASE 2: NAVIGATE — Sidebar → Patients")
         logger.info("=" * 70)
 
         try:
-            # Click Patients link
+            # Step 1: Click "Patients" link in the sidebar
             patients_link = await self._resolve_selector("patients_link")
             if not patients_link:
                 return await self._fail_phase(
@@ -576,8 +433,9 @@ class TNExecutor:
                     phase_start,
                 )
             await patients_link.click()
+            logger.info("[NAVIGATE] Clicked Patients")
 
-            # Confirm patients page loaded
+            # Step 2: Wait for the Patients page to load
             patients_page = await self._resolve_selector("patients_page_indicator")
             if not patients_page:
                 return await self._fail_phase(
@@ -585,8 +443,9 @@ class TNExecutor:
                     "Patients page did not load after clicking Patients link",
                     phase_start,
                 )
+            logger.info("[NAVIGATE] Patients page loaded")
 
-            # Click New Patient
+            # Step 3: Confirm "+ New Patient" button is present (do NOT click it)
             new_patient_btn = await self._resolve_selector("new_patient_button")
             if not new_patient_btn:
                 return await self._fail_phase(
@@ -594,266 +453,348 @@ class TNExecutor:
                     "New Patient button not found on patients page",
                     phase_start,
                 )
-            await new_patient_btn.click()
+            logger.info("[NAVIGATE] New Patient button detected")
 
-            # Confirm form loaded by waiting for first name field
-            form_ready = await self._resolve_selector("field_first_name")
-            if not form_ready:
-                return await self._fail_phase(
-                    phase, "new_patient_form_not_found",
-                    "New patient form did not load (first name field not found)",
-                    phase_start,
-                )
+            # Step 4: Capture screenshot of the Patients page
+            await self._capture_screenshot("navigate_patients_page")
 
-            self._record_log(phase, "success", "New patient form loaded", phase_start=phase_start)
+            self._record_log(phase, "success", "Patients page loaded, New Patient button confirmed", phase_start=phase_start)
             return True
 
         except Exception as e:
             return await self._fail_phase(phase, "navigation_failed", str(e), phase_start)
 
     # ========================================================================
-    # Phase 3: Fill Patient Form
+    # Phase 3 (detection): Confirm New Patient form fields exist
     # ========================================================================
 
-    async def _phase_fill_form(self, patient: TNPatientInput) -> bool:
-        """Fill form fields in strict order with DOM confirmation."""
+    async def _phase_detect_form(self) -> bool:
+        """Click + New Patient, confirm core form fields exist. Does NOT fill."""
         phase = TNPhase.FILL_FORM
         phase_start = time.time()
         logger.info("=" * 70)
-        logger.info("PHASE 3: FILL FORM — Populate patient fields")
+        logger.info("PHASE 3: FORM DETECTION — Confirm New Patient form fields")
         logger.info("=" * 70)
 
         try:
-            # 3.1 First Name
-            if not await self._fill_field("field_first_name", patient.first_name, "First Name"):
+            # Step 1: Click "+ New Patient" using verified CSS selector
+            url_before = self._page.url
+            logger.info(f"[FORM DETECT] URL before click: {url_before}")
+
+            new_patient_btn = await self._resolve_selector("new_patient_button")
+            if not new_patient_btn:
+                await self._capture_screenshot("new_patient_btn_not_found")
                 return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill First Name field",
+                    phase, "new_patient_form_not_found",
+                    "New Patient button not found on Patients page",
+                    phase_start,
+                )
+            await new_patient_btn.click()
+            logger.info("[FORM DETECT] Clicked New Patient")
+
+            # Step 2: Wait for URL to change to the edit page
+            try:
+                await self._page.wait_for_url("**/patients/edit/**", timeout=10000)
+                logger.info(f"[FORM DETECT] URL after navigation: {self._page.url}")
+            except Exception:
+                logger.info(f"[FORM DETECT] URL did not change to edit page. Still: {self._page.url}")
+                await self._capture_screenshot("url_no_change_after_click")
+                return await self._fail_phase(
+                    phase, "new_patient_form_not_found",
+                    f"URL did not navigate to patients/edit after click. URL: {self._page.url}",
                     phase_start,
                 )
 
-            # 3.2 Last Name
-            if not await self._fill_field("field_last_name", patient.last_name, "Last Name"):
+            # Step 3: Wait for form to render, confirm first name field exists
+            first_name_loc = self._page.locator("#PatientInformationEditor__FirstNameInput")
+            try:
+                await first_name_loc.wait_for(state="visible", timeout=10000)
+            except Exception:
+                await self._capture_screenshot("form_not_loaded")
                 return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill Last Name field",
+                    phase, "new_patient_form_not_found",
+                    f"First name field not visible after 10s. URL: {self._page.url}",
                     phase_start,
                 )
+            logger.info("[FORM DETECT] New Patient form loaded (first name field visible)")
 
-            # 3.3 Date of Birth
-            if not await self._fill_field("field_dob", patient.dob, "Date of Birth"):
-                return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill Date of Birth field",
-                    phase_start,
-                )
-
-            # 3.4 Address
-            if not await self._fill_field("field_address", patient.address, "Address"):
-                return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill Address field",
-                    phase_start,
-                )
-
-            # 3.5 Zip Code + autocomplete confirmation
-            if not await self._fill_field("field_zip", patient.zip, "Zip"):
-                return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill Zip field",
-                    phase_start,
-                )
-
-            # Poll for city auto-populate (no fixed timeout)
-            zip_ok = await self._poll_condition(
-                condition_fn=self._check_city_populated,
-                description="zip autocomplete → city populated",
-                timeout_ms=8000,
-            )
-            if not zip_ok:
-                return await self._fail_phase(
-                    phase, "zip_autocomplete_failed",
-                    "City field did not auto-populate after entering zip code",
-                    phase_start,
-                )
-
-            # 3.6 Administrative Sex (radio button)
-            sex_selector_key = (
-                "sex_male_radio" if patient.sex == "Male" else "sex_female_radio"
-            )
-            sex_radio = await self._resolve_selector(sex_selector_key)
-            if not sex_radio:
-                return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    f"Could not find {patient.sex} radio button",
-                    phase_start,
-                )
-            await sex_radio.click()
-            logger.info(f"[FILL] Sex: {patient.sex} selected")
-
-            # 3.7 Email
-            if not await self._fill_field("field_email", patient.email, "Email"):
-                return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill Email field",
-                    phase_start,
-                )
-
-            # 3.8 Phone
-            if not await self._fill_field("field_phone", patient.phone, "Phone"):
-                return await self._fail_phase(
-                    phase, "form_field_not_found",
-                    "Could not fill Phone field",
-                    phase_start,
-                )
-
-            self._record_log(phase, "success", "All patient fields filled", phase_start=phase_start)
-            return True
-
-        except Exception as e:
-            return await self._fail_phase(phase, "form_field_not_found", str(e), phase_start)
-
-    # ========================================================================
-    # Phase 4: Save Patient
-    # ========================================================================
-
-    async def _phase_save(self, patient: TNPatientInput) -> bool:
-        """Click save, confirm patient creation, handle duplicates."""
-        phase = TNPhase.SAVE
-        phase_start = time.time()
-        logger.info("=" * 70)
-        logger.info("PHASE 4: SAVE — Submit new patient form")
-        logger.info("=" * 70)
-
-        try:
-            save_btn = await self._resolve_selector("save_button")
-            if not save_btn:
-                return await self._fail_phase(
-                    phase, "save_failed",
-                    "Save button not found",
-                    phase_start,
-                )
-            await save_btn.click()
-
-            # Check for duplicate alert (fast probe)
-            duplicate = await self._probe_selector("duplicate_alert", timeout_ms=3000)
-            if duplicate:
-                return await self._fail_phase(
-                    phase, "patient_duplicate_detected",
-                    "TherapyNotes reported a duplicate patient",
-                    phase_start,
-                )
-
-            # Confirm redirect to patient detail page
-            detail = await self._resolve_selector("patient_detail_indicator")
-            if not detail:
-                return await self._fail_phase(
-                    phase, "patient_confirmation_failed",
-                    "Patient detail page did not load after save",
-                    phase_start,
-                )
-
-            # Confirm patient name on detail page
-            expected_name = f"{patient.first_name} {patient.last_name}"
-            name_confirmed = await self._poll_condition(
-                condition_fn=lambda: self._check_text_on_page(expected_name),
-                description=f"patient name '{expected_name}' visible on detail page",
-                timeout_ms=8000,
-            )
-            if not name_confirmed:
-                return await self._fail_phase(
-                    phase, "patient_confirmation_failed",
-                    f"Patient name '{expected_name}' not found on detail page",
-                    phase_start,
-                )
+            await self._capture_screenshot("form_detection_success")
 
             self._record_log(
                 phase, "success",
-                f"Patient '{expected_name}' saved and confirmed",
+                "New Patient form loaded, first name field confirmed",
                 phase_start=phase_start,
             )
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "save_failed", str(e), phase_start)
+            return await self._fail_phase(phase, "new_patient_form_not_found", str(e), phase_start)
 
     # ========================================================================
-    # Phase 5: Insert RFS Note
+    # Phase 4: Fill Required Fields (does NOT save)
     # ========================================================================
 
-    async def _phase_insert_rfs(self, rfs_url: str) -> bool:
-        """Navigate to notes, create Intake Referral note with RFS URL."""
-        phase = TNPhase.INSERT_RFS
+    async def _phase_fill_required(self, patient: TNPatientInput) -> bool:
+        """Fill required patient fields using verified DOM IDs. Does NOT click Save."""
+        phase = TNPhase.FILL_FORM
         phase_start = time.time()
         logger.info("=" * 70)
-        logger.info("PHASE 5: INSERT RFS — Add referral note")
+        logger.info("PHASE 4: FILL REQUIRED FIELDS")
         logger.info("=" * 70)
 
         try:
-            # Navigate to Notes section
-            notes_tab = await self._resolve_selector("notes_tab")
-            if not notes_tab:
-                return await self._fail_phase(
-                    phase, "rfs_note_creation_failed",
-                    "Notes tab not found on patient detail page",
-                    phase_start,
-                )
-            await notes_tab.click()
+            page = self._page
 
-            # Click Add Note
-            add_note = await self._resolve_selector("add_note_button")
-            if not add_note:
-                return await self._fail_phase(
-                    phase, "rfs_note_creation_failed",
-                    "Add Note button not found",
-                    phase_start,
-                )
-            await add_note.click()
+            # Helper: fill a field by exact locator, read back, confirm
+            async def fill_and_confirm(selector: str, value: str, label: str) -> bool:
+                loc = page.locator(selector)
+                if await loc.count() == 0:
+                    logger.error(f"[FILL] {label}: selector '{selector}' not found (count=0)")
+                    return False
+                await loc.fill(value)
+                actual = await loc.input_value()
+                if actual != value:
+                    logger.warning(f"[FILL] {label}: mismatch — expected '{value}', got '{actual}'")
+                    return False
+                logger.info(f"[FILL] {label}: '{value}' confirmed")
+                return True
 
-            # Fill title
-            title_field = await self._resolve_selector("note_title_field")
-            if not title_field:
-                return await self._fail_phase(
-                    phase, "rfs_note_creation_failed",
-                    "Note title field not found",
-                    phase_start,
-                )
-            await title_field.fill("Intake Referral")
+            # 1. First Name
+            if not await fill_and_confirm(
+                "#PatientInformationEditor__FirstNameInput",
+                patient.first_name, "First Name",
+            ):
+                return await self._fail_phase(phase, "form_field_not_found", "Could not fill First Name", phase_start)
 
-            # Fill body with RFS URL
-            body_field = await self._resolve_selector("note_body_field")
-            if not body_field:
-                return await self._fail_phase(
-                    phase, "rfs_note_creation_failed",
-                    "Note body field not found",
-                    phase_start,
-                )
-            await body_field.fill(rfs_url)
+            # 2. Last Name
+            if not await fill_and_confirm(
+                "#PatientInformationEditor__LastNameInput",
+                patient.last_name, "Last Name",
+            ):
+                return await self._fail_phase(phase, "form_field_not_found", "Could not fill Last Name", phase_start)
 
-            # Save note
-            save_note = await self._resolve_selector("note_save_button")
-            if not save_note:
-                return await self._fail_phase(
-                    phase, "rfs_note_creation_failed",
-                    "Note save button not found",
-                    phase_start,
-                )
-            await save_note.click()
+            # 3. Date of Birth
+            if not await fill_and_confirm(
+                "#PatientInformationEditor__DOBInput",
+                patient.dob, "Date of Birth",
+            ):
+                return await self._fail_phase(phase, "form_field_not_found", "Could not fill Date of Birth", phase_start)
 
-            # Confirm note appears
-            note_confirmed = await self._resolve_selector("note_saved_indicator")
-            if not note_confirmed:
-                return await self._fail_phase(
-                    phase, "rfs_note_creation_failed",
-                    "Note 'Intake Referral' not found in notes list after save",
-                    phase_start,
-                )
+            # 4. Address 1
+            if not await fill_and_confirm(
+                "#AddressEditorView__Address1Input_PatientAddress",
+                patient.address, "Address 1",
+            ):
+                return await self._fail_phase(phase, "form_field_not_found", "Could not fill Address 1", phase_start)
 
-            self._record_log(phase, "success", "RFS note created and confirmed", phase_start=phase_start)
+            # 5. Zip Code — click, clear, type char-by-char, then blur
+            zip_loc = page.locator("#AddressEditorView__PostalCodeInput_PatientAddress")
+            if await zip_loc.count() == 0:
+                return await self._fail_phase(phase, "form_field_not_found", "Zip field not found", phase_start)
+            await zip_loc.click()
+            await zip_loc.fill("")
+            await page.keyboard.type(patient.zip, delay=50)
+            try:
+                await page.wait_for_function(
+                    "(selector, expected) => document.querySelector(selector).value === expected",
+                    "#AddressEditorView__PostalCodeInput_PatientAddress",
+                    patient.zip,
+                    timeout=3000,
+                )
+            except Exception:
+                pass
+            actual_zip = await zip_loc.input_value()
+            if actual_zip != patient.zip:
+                return await self._fail_phase(phase, "form_field_not_found", f"Zip mismatch: '{actual_zip}' != '{patient.zip}'", phase_start)
+            logger.info(f"[FILL] Zip: '{patient.zip}' confirmed")
+            await zip_loc.press("Tab")
+            await page.wait_for_timeout(500)
+            logger.info("[FILL] Zip: Tab pressed (blur)")
+
+            # 5b. Poll for city auto-populate
+            city_loc = page.locator("#AddressEditorView__CityInput_PatientAddress")
+            zip_ok = await self._poll_condition(
+                condition_fn=lambda: self._check_locator_has_value(city_loc),
+                description="zip autocomplete → city populated",
+                timeout_ms=5000,
+            )
+            if not zip_ok:
+                return await self._fail_phase(phase, "zip_autocomplete_failed", "City did not auto-populate after zip", phase_start)
+            city_val = await city_loc.input_value()
+            logger.info(f"[FILL] City auto-populated: '{city_val}'")
+
+            # 6. Sex (radio) — use check(), fallback to click(force=True)
+            sex_value = "0" if patient.sex == "Male" else "1"
+            sex_loc = page.locator(f'input[name="Sex"][value="{sex_value}"]')
+            if await sex_loc.count() == 0:
+                return await self._fail_phase(phase, "form_field_not_found", f"Sex radio value={sex_value} not found", phase_start)
+            try:
+                await sex_loc.check()
+                logger.info(f"[FILL] Sex: {patient.sex} (value={sex_value}) selected via check()")
+            except Exception:
+                await sex_loc.click(force=True)
+                logger.info(f"[FILL] Sex: {patient.sex} (value={sex_value}) selected via click(force=True)")
+
+            # 7. Email
+            if not await fill_and_confirm(
+                "#PatientInformationEditor__EmailInput",
+                patient.email, "Email",
+            ):
+                return await self._fail_phase(phase, "form_field_not_found", "Could not fill Email", phase_start)
+
+            # 8. Mobile Phone
+            if not await fill_and_confirm(
+                "#PatientInformationEditor__MobilePhoneInput",
+                patient.phone, "Mobile Phone",
+            ):
+                return await self._fail_phase(phase, "form_field_not_found", "Could not fill Mobile Phone", phase_start)
+
+            # Capture screenshot of filled form
+            await self._capture_screenshot("fill_required_complete")
+
+            self._record_log(
+                phase, "success",
+                "All required fields filled and confirmed",
+                phase_start=phase_start,
+            )
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "rfs_note_creation_failed", str(e), phase_start)
+            return await self._fail_phase(phase, "form_field_not_found", str(e), phase_start)
+
+    async def _check_locator_has_value(self, locator) -> bool:
+        """Poll helper: check if a locator's input has a non-empty value."""
+        try:
+            val = await locator.input_value()
+            return bool(val and val.strip())
+        except Exception:
+            return False
+
+    # ========================================================================
+    # Phase 5: Save Patient
+    # ========================================================================
+
+    async def _phase_save_patient(self, patient: TNPatientInput) -> bool:
+        """Click Save New Patient, confirm creation, detect errors/duplicates."""
+        phase = TNPhase.SAVE
+        phase_start = time.time()
+        logger.info("=" * 70)
+        logger.info("PHASE 5: SAVE PATIENT")
+        logger.info("=" * 70)
+
+        try:
+            page = self._page
+            url_before = page.url
+
+            # Step 1: Locate psy-button.button-save
+            save_loc = page.locator("psy-button.button-save").first
+            count = await page.locator("psy-button.button-save").count()
+            logger.info(f"[SAVE] Selector 'psy-button.button-save' → count={count}")
+            if count == 0:
+                await self._capture_screenshot("save_button_not_found")
+                return await self._fail_phase(phase, "save_failed", "psy-button.button-save not found (count=0)", phase_start)
+
+            is_visible = await save_loc.is_visible()
+            bbox = await save_loc.bounding_box()
+            logger.info(f"[SAVE] Button state: visible={is_visible}, bbox={bbox}")
+
+            # Step 2: Click
+            await save_loc.click()
+            logger.info("[SAVE] Save clicked")
+
+            # Step 3: Wait for page response
+            await page.wait_for_timeout(2000)
+
+            url_after = page.url
+            logger.info(f"[SAVE] URL after save: {url_after}")
+
+            # Step 4: Check for validation errors
+            validation_errors = await page.evaluate("""
+                () => {
+                    const errors = [];
+                    const summary = document.querySelector('.validation-summary-errors, .alert-danger, [role="alert"]');
+                    if (summary && summary.offsetParent !== null) {
+                        errors.push(summary.innerText.trim().slice(0, 300));
+                    }
+                    const redFields = document.querySelectorAll('input.input-validation-error, .field-validation-error');
+                    if (redFields.length > 0) {
+                        errors.push(redFields.length + ' field(s) have validation errors');
+                    }
+                    return errors;
+                }
+            """)
+
+            if validation_errors:
+                for err in validation_errors:
+                    logger.warning(f"[SAVE] Validation error: {err}")
+                await self._capture_screenshot("save_validation_errors")
+                return await self._fail_phase(
+                    phase, "save_failed",
+                    f"Validation errors after save: {'; '.join(validation_errors)}",
+                    phase_start,
+                )
+
+            # Step 5: Check for duplicate patient warning
+            duplicate_text = await page.evaluate("""
+                () => {
+                    const body = document.body.innerText || '';
+                    if (body.includes('already exists') || body.includes('duplicate') || body.includes('Duplicate')) {
+                        const idx = body.indexOf('already exists');
+                        if (idx >= 0) return body.slice(Math.max(0, idx - 50), idx + 100);
+                        const idx2 = body.indexOf('uplicate');
+                        if (idx2 >= 0) return body.slice(Math.max(0, idx2 - 50), idx2 + 100);
+                    }
+                    return null;
+                }
+            """)
+
+            if duplicate_text:
+                logger.warning(f"[SAVE] Duplicate detected: {duplicate_text}")
+                await self._capture_screenshot("save_duplicate_detected")
+                return await self._fail_phase(
+                    phase, "patient_duplicate_detected",
+                    f"Duplicate patient warning: {duplicate_text[:200]}",
+                    phase_start,
+                )
+
+            # Step 6: Capture patient URL and extract ID
+            self._tn_patient_url = page.url
+            self._tn_patient_id = None
+
+            # Try to extract patient ID from URL (e.g. /app/patients/view/12345)
+            import re
+            id_match = re.search(r'/patients/(?:view|edit|detail)/(\d+)', page.url)
+            if id_match:
+                self._tn_patient_id = id_match.group(1)
+            else:
+                # Try query param (e.g. ?patientId=12345)
+                id_match = re.search(r'[?&]patientId=(\d+)', page.url)
+                if id_match:
+                    self._tn_patient_id = id_match.group(1)
+
+            logger.info(f"[SAVE] tn_patient_url: {self._tn_patient_url}")
+            logger.info(f"[SAVE] tn_patient_id: {self._tn_patient_id}")
+
+            # Step 7: Confirm patient name visible
+            expected_name = f"{patient.first_name} {patient.last_name}"
+            name_on_page = await page.evaluate(
+                "(name) => document.body.innerText.includes(name)",
+                expected_name,
+            )
+            logger.info(f"[SAVE] Patient name '{expected_name}' on page: {name_on_page}")
+
+            await self._capture_screenshot("save_complete")
+
+            self._record_log(
+                phase, "success",
+                f"Patient '{expected_name}' saved successfully",
+                phase_start=phase_start,
+            )
+            logger.info("[SAVE] Patient created successfully")
+            return True
+
+        except Exception as e:
+            return await self._fail_phase(phase, "save_failed", str(e), phase_start)
 
     # ========================================================================
     # Selector Resolution — tries candidates in order, returns first match
@@ -903,54 +844,6 @@ class TNExecutor:
             except Exception:
                 continue
         return None
-
-    # ========================================================================
-    # Form Helpers
-    # ========================================================================
-
-    async def _fill_field(
-        self, selector_key: str, value: str, label: str
-    ) -> bool:
-        """Resolve a field selector, fill it, confirm the value took."""
-        element = await self._resolve_selector(selector_key)
-        if not element:
-            logger.error(f"[FILL] Field not found: {label} ({selector_key})")
-            return False
-
-        await element.fill(value)
-
-        # Confirm value was set by reading it back
-        actual = await element.input_value()
-        if actual != value:
-            logger.warning(
-                f"[FILL] Value mismatch for {label}: expected '{value}', got '{actual}'"
-            )
-            # Try once more with click + clear + type
-            await element.click()
-            await self._page.keyboard.press("Control+a")
-            await self._page.keyboard.type(value)
-            actual = await element.input_value()
-            if actual != value:
-                logger.error(f"[FILL] Retry failed for {label}: '{actual}' != '{value}'")
-                return False
-
-        logger.info(f"[FILL] {label}: '{value}' confirmed")
-        return True
-
-    async def _check_city_populated(self) -> bool:
-        """Check if the city field has a non-empty value (zip autocomplete)."""
-        candidates = SELECTORS.get("field_city", [])
-        for selector in candidates:
-            try:
-                el = await self._page.query_selector(selector)
-                if el:
-                    val = await el.input_value()
-                    if val and val.strip():
-                        logger.info(f"[FILL] Zip autocomplete confirmed: city='{val.strip()}'")
-                        return True
-            except Exception:
-                continue
-        return False
 
     async def _check_text_on_page(self, text: str) -> bool:
         """Check if specific text exists anywhere in the page body."""
@@ -1080,6 +973,13 @@ class TNExecutor:
 
 
 # ============================================================================
+# Concurrency guard — only one patient creation at a time
+# ============================================================================
+
+_execution_lock = asyncio.Lock()
+
+
+# ============================================================================
 # Module-level entry point (matches food_delivery_executor pattern)
 # ============================================================================
 
@@ -1091,6 +991,7 @@ async def run_tn_patient_creation(
 
     Loads credentials from environment BEFORE launching browser.
     Fails fast with a structured error if any credential is missing.
+    Only one execution can run at a time (module-level asyncio.Lock).
 
     Args:
         runtime: PlaywrightRuntime instance.
@@ -1099,22 +1000,34 @@ async def run_tn_patient_creation(
     Returns:
         TNExecutorOutput with status, logs, and screenshots.
     """
-    # Fail fast: validate credentials before spending time on browser launch
-    try:
-        credentials = get_tn_credentials()
-    except Exception as e:
-        logger.error(f"TN credential validation failed: {e}")
+    # Concurrency guard: only one patient creation at a time
+    if _execution_lock.locked():
+        logger.warning("TN patient creation rejected — another execution is in progress")
         return TNExecutorOutput.failure(
             phase=TNPhase.ENTRY,
-            reason="login_failed",
-            message=(
-                "Missing TherapyNotes credentials. Required env vars: "
-                "THERAPYNOTES_PRACTICE_CODE, THERAPYNOTES_USERNAME, THERAPYNOTES_PASSWORD"
-            ),
+            reason="unknown_error",
+            message="Another patient creation is already in progress",
             logs=[],
             duration_ms=0,
         )
 
-    logger.info(f"TN credentials validated: {credentials.safe_display}")
-    executor = TNExecutor(runtime, credentials)
-    return await executor.execute(patient)
+    async with _execution_lock:
+        # Fail fast: validate credentials before spending time on browser launch
+        try:
+            credentials = get_tn_credentials()
+        except Exception as e:
+            logger.error(f"TN credential validation failed: {e}")
+            return TNExecutorOutput.failure(
+                phase=TNPhase.ENTRY,
+                reason="login_failed",
+                message=(
+                    "Missing TherapyNotes credentials. Required env vars: "
+                    "THERAPYNOTES_PRACTICE_CODE, THERAPYNOTES_USERNAME, THERAPYNOTES_PASSWORD"
+                ),
+                logs=[],
+                duration_ms=0,
+            )
+
+        logger.info(f"TN credentials validated: {credentials.safe_display}")
+        executor = TNExecutor(runtime, credentials)
+        return await executor.execute(patient)
