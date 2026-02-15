@@ -9,10 +9,11 @@ CRITICAL FOR RAILWAY DEPLOYMENT:
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 # Load .env file at startup (lightweight)
 from dotenv import load_dotenv
@@ -79,6 +80,20 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Validation error handler — exposes field-level details for TN debugging
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        body = await request.body()
+        logger.warning(f"[TN DEBUG] Validation error body: {body}")
+        logger.warning(f"[TN DEBUG] Validation errors: {exc.errors()}")
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": exc.errors(),
+                "body_received": body.decode("utf-8", errors="replace"),
+            },
+        )
 
     # API key middleware for /api/tn/* routes
     tn_api_key = os.environ.get("TN_API_KEY")
