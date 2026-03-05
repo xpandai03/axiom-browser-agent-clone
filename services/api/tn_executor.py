@@ -291,7 +291,7 @@ class TNExecutor:
                     "Practice code submit button not found",
                     phase_start,
                 )
-            await submit.click()
+            await self._safe_click(submit, "practice code submit")
             logger.info("[ENTRY] Practice code submitted")
 
             # Wait for username field to appear (confirms step 2 loaded)
@@ -381,7 +381,7 @@ class TNExecutor:
                     "Login submit button not found",
                     phase_start,
                 )
-            await submit_el.click()
+            await self._safe_click(submit_el, "login submit")
 
             # Check for login error (fast probe — don't wait long)
             login_error = await self._probe_selector("login_error", timeout_ms=3000)
@@ -424,6 +424,9 @@ class TNExecutor:
         logger.info("=" * 70)
 
         try:
+            # Pre-clear any modal overlays that may have appeared after login
+            await self._dismiss_blocking_dialogs()
+
             # Step 1: Click "Patients" link in the sidebar
             patients_link = await self._resolve_selector("patients_link")
             if not patients_link:
@@ -432,7 +435,7 @@ class TNExecutor:
                     "Patients link not found in sidebar",
                     phase_start,
                 )
-            await patients_link.click()
+            await self._safe_click(patients_link, "Patients link")
             logger.info("[NAVIGATE] Clicked Patients")
 
             # Step 2: Wait for the Patients page to load
@@ -477,6 +480,9 @@ class TNExecutor:
         logger.info("=" * 70)
 
         try:
+            # Pre-clear any modal overlays before clicking New Patient
+            await self._dismiss_blocking_dialogs()
+
             # Step 1: Click "+ New Patient" using verified CSS selector
             url_before = self._page.url
             logger.info(f"[FORM DETECT] URL before click: {url_before}")
@@ -489,7 +495,7 @@ class TNExecutor:
                     "New Patient button not found on Patients page",
                     phase_start,
                 )
-            await new_patient_btn.click()
+            await self._safe_click(new_patient_btn, "New Patient button")
             logger.info("[FORM DETECT] Clicked New Patient")
 
             # Step 2: Wait for URL to change to the edit page
@@ -684,6 +690,10 @@ class TNExecutor:
 
         try:
             page = self._page
+
+            # Pre-clear any modal overlays before saving
+            await self._dismiss_blocking_dialogs()
+
             url_before = page.url
 
             # Step 1: Locate psy-button.button-save
@@ -699,7 +709,7 @@ class TNExecutor:
             logger.info(f"[SAVE] Button state: visible={is_visible}, bbox={bbox}")
 
             # Step 2: Click
-            await save_loc.click()
+            await self._safe_click(save_loc, "Save button")
             logger.info("[SAVE] Save clicked")
 
             # Step 3: Wait for page response
@@ -852,6 +862,98 @@ class TNExecutor:
             return text.lower() in content.lower()
         except Exception:
             return False
+
+    # ========================================================================
+    # Dialog Dismissal & Safe Click — resilient against TN modal overlays
+    # ========================================================================
+
+    async def _dismiss_blocking_dialogs(self) -> bool:
+        """
+        Detect and dismiss TherapyNotes modal dialogs that block pointer events.
+
+        Targets <div class="Dialog"> inside <div id="ElementDropbox"> and
+        standard [role="dialog"] overlays (session warnings, insurance alerts,
+        system confirmations). Returns True if any dialog was dismissed.
+        """
+        dialog_close_selectors = [
+            '.Dialog button:has-text("Close")',
+            '.Dialog button:has-text("OK")',
+            '.Dialog button:has-text("Continue")',
+            '.Dialog button:has-text("Cancel")',
+            '.Dialog button:has-text("Yes")',
+            '.Dialog button:has-text("No")',
+            '.Dialog button:has-text("Dismiss")',
+            '#ElementDropbox .Dialog button',
+            '[role="dialog"] button:has-text("Close")',
+            '[role="dialog"] button:has-text("OK")',
+            '[role="dialog"] button:has-text("Continue")',
+            '.modal button:has-text("Close")',
+            '.modal button:has-text("OK")',
+            'button.dialog-close',
+            '.Dialog .close',
+        ]
+
+        for selector in dialog_close_selectors:
+            try:
+                btn = self._page.locator(selector).first
+                if await btn.count() > 0 and await btn.is_visible(timeout=500):
+                    await btn.click(timeout=2000)
+                    logger.info(f"[TN AGENT] Dialog dismissed via: {selector}")
+                    await asyncio.sleep(0.3)
+                    return True
+            except Exception:
+                continue
+
+        for overlay_sel in ['.Dialog', '[role="dialog"]', '#ElementDropbox .Dialog']:
+            try:
+                overlay = self._page.locator(overlay_sel).first
+                if await overlay.count() > 0 and await overlay.is_visible(timeout=500):
+                    await self._page.keyboard.press("Escape")
+                    logger.info(f"[TN AGENT] Dialog dismissed via Escape (overlay: {overlay_sel})")
+                    await asyncio.sleep(0.3)
+                    try:
+                        still_visible = await overlay.is_visible(timeout=500)
+                    except Exception:
+                        still_visible = False
+                    if not still_visible:
+                        return True
+            except Exception:
+                continue
+
+        return False
+
+    async def _safe_click(self, element_or_locator, label: str = "element") -> None:
+        """
+        Click with automatic dialog dismissal on interception failure.
+
+        Attempts a normal click first. If the click fails because a TN modal
+        overlay intercepts pointer events, dismisses the dialog and retries.
+        Falls back to Escape key if button-based dismissal doesn't work.
+        """
+        try:
+            await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
+            return
+        except Exception as first_err:
+            err_str = str(first_err)
+            if "intercepts pointer events" not in err_str and "timeout" not in err_str.lower():
+                raise
+
+            logger.warning(f"[TN AGENT] Click blocked on '{label}': {err_str[:200]}")
+            logger.info("[TN AGENT] Attempting to dismiss blocking dialog...")
+
+        dismissed = await self._dismiss_blocking_dialogs()
+        if dismissed:
+            logger.info(f"[TN AGENT] Retrying click on '{label}' after dialog dismissal")
+        try:
+            await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
+            return
+        except Exception as second_err:
+            logger.warning(f"[TN AGENT] Retry 1 failed on '{label}': {str(second_err)[:200]}")
+
+        await self._page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+        logger.info(f"[TN AGENT] Retrying click on '{label}' after Escape")
+        await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
 
     # ========================================================================
     # Poll-based Waiting (no fixed timeouts)
