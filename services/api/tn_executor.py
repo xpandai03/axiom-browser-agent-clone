@@ -225,10 +225,13 @@ class TNExecutor:
 
         except Exception as e:
             logger.exception(f"Unhandled executor error: {e}")
+            screenshot = None
+            if self._page:
+                screenshot = await self._capture_screenshot("unhandled_error")
             self._record_log(
                 TNPhase.ENTRY, "failure",
                 f"Unhandled error: {e}",
-                await self._capture_screenshot("unhandled_error"),
+                screenshot,
             )
             return self._build_failure_output(
                 phase_override=TNPhase.ENTRY,
@@ -745,14 +748,29 @@ class TNExecutor:
                 )
 
             # Step 5: Check for duplicate patient warning
+            # Scoped to dialog/modal/alert containers first, falls back to body
             duplicate_text = await page.evaluate("""
                 () => {
+                    const containers = [
+                        '.Dialog', '[role="dialog"]', '.modal',
+                        '.validation-summary-errors', '.alert-danger',
+                        '[role="alert"]', '#ElementDropbox .Dialog'
+                    ];
+                    for (const sel of containers) {
+                        const el = document.querySelector(sel);
+                        if (el && el.offsetParent !== null) {
+                            const text = el.innerText || '';
+                            if (text.includes('duplicate') || text.includes('Duplicate') || text.includes('already exists')) {
+                                return text.trim().slice(0, 200);
+                            }
+                        }
+                    }
                     const body = document.body.innerText || '';
                     if (body.includes('already exists') || body.includes('duplicate') || body.includes('Duplicate')) {
                         const idx = body.indexOf('already exists');
-                        if (idx >= 0) return body.slice(Math.max(0, idx - 50), idx + 100);
+                        if (idx >= 0) return body.slice(Math.max(0, idx - 30), idx + 80).trim();
                         const idx2 = body.indexOf('uplicate');
-                        if (idx2 >= 0) return body.slice(Math.max(0, idx2 - 50), idx2 + 100);
+                        if (idx2 >= 0) return body.slice(Math.max(0, idx2 - 30), idx2 + 80).trim();
                     }
                     return null;
                 }

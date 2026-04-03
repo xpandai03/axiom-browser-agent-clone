@@ -7,7 +7,7 @@ automation workflow that creates patients in TherapyNotes.
 
 from enum import Enum
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 
@@ -57,9 +57,18 @@ class TNPatientInput(BaseModel):
     )
     zip: str = Field(
         ...,
-        description="5-digit US zip code",
+        description="5-digit US zip code (ZIP+4 normalized automatically)",
         pattern=r"^\d{5}$",
     )
+
+    @field_validator("zip", mode="before")
+    @classmethod
+    def normalize_zip(cls, v):
+        """Accept ZIP+4 (e.g. 87507-2691) and normalize to 5-digit."""
+        if isinstance(v, str):
+            return v.split("-")[0]
+        return v
+
     sex: Literal["Male", "Female"] = Field(
         ...,
         description="Administrative sex (radio select)",

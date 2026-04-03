@@ -156,19 +156,13 @@ class PlaywrightRuntime:
         async_playwright = pw['async_playwright']
         self._playwright = await async_playwright().start()
 
-        # Browser launch args
+        # Browser launch args — minimal set that doesn't duplicate Playwright defaults.
+        # CRITICAL: --single-process removed — causes SIGSEGV in Railway containers.
         launch_args = [
             "--no-sandbox",
             "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
             "--disable-gpu",
             "--disable-software-rasterizer",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-default-apps",
-            "--disable-sync",
-            "--no-first-run",
-            "--single-process",
             "--disable-blink-features=AutomationControlled",
         ]
 
@@ -184,15 +178,21 @@ class PlaywrightRuntime:
             logger.info("PROXY SKIPPED (skip_proxy=True) — direct connection for this workflow")
         elif proxy_config:
             launch_kwargs["proxy"] = proxy_config
-            # Don't log the full server URL - it contains embedded credentials!
-            logger.info(f"🔐 PROXY ATTACHED TO chromium.launch() - host: {config.proxy_server_host}")
+            logger.info(f"PROXY ATTACHED TO chromium.launch() - host: {config.proxy_server_host}")
         else:
-            logger.error("⚠️ NO PROXY ATTACHED - Browser launching with DIRECT CONNECTION!")
-            logger.error("⚠️ Uber Eats WILL detect datacenter IP and return degraded page!")
+            logger.error("NO PROXY ATTACHED - Browser launching with DIRECT CONNECTION!")
 
         logger.info(f"Launching browser: headless={self._headless}, proxy={'ATTACHED (auth embedded)' if proxy_config else 'NONE'}")
-        self._browser = await self._playwright.chromium.launch(**launch_kwargs)
-        logger.info("✅ Browser launched successfully")
+
+        # Retry once on launch failure (handles transient Railway container instability)
+        try:
+            self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+        except Exception as launch_err:
+            logger.warning(f"Browser launch failed, retrying in 2s: {launch_err}")
+            await asyncio.sleep(2)
+            self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+
+        logger.info("Browser launched successfully")
 
         # Viewport with slight randomization
         viewport_width = 1920 + random.randint(-50, 50)
