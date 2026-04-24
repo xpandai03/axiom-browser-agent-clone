@@ -386,9 +386,7 @@ class TNExecutor:
                 )
             await self._safe_click(submit_el, "login submit")
 
-            # Post-submit diagnostic — ALWAYS capture, before any long probes.
-            # This is the true landing page; any later screenshot is taken
-            # after 2+ minutes of selector thrashing and may have shifted.
+            # Post-submit: wait for initial DOM, record URL + title for diagnostics.
             try:
                 await self._page.wait_for_load_state("domcontentloaded", timeout=8000)
             except Exception:
@@ -401,67 +399,88 @@ class TNExecutor:
                 post_submit_title = "<unreadable>"
             logger.info(f"[LOGIN] Post-submit URL: {post_submit_url}")
             logger.info(f"[LOGIN] Post-submit title: {post_submit_title}")
-            await self._capture_screenshot("login_postsubmit")
 
-            # Explicit login error (e.g. "did not match any account")
-            login_error = await self._probe_selector("login_error", timeout_ms=3000)
-            if login_error:
-                error_text = await login_error.inner_text()
+            # PHI guard: post-submit screenshot captures the authenticated
+            # dashboard (patient data). Persist only when TN_DEBUG_MODE=true.
+            if os.environ.get("TN_DEBUG_MODE", "false").lower() == "true":
+                await self._capture_screenshot("login_postsubmit")
+
+            # Positive dashboard detection — the ONLY reliable success signal.
+            # TN's login page is a SPA: the URL stays at /app/login/ even
+            # after successful authentication (verified in production logs
+            # where body showed full dashboard but URL was unchanged). So
+            # URL transitions CANNOT be used as a signal. Instead, wait up
+            # to 30s for any marker that only exists on the authenticated
+            # dashboard. CSS-only selectors — no :has-text, no URL checks.
+            dashboard_selector = (
+                "nav, "
+                "#sidebar, "
+                ".main-nav, "
+                "[data-testid='sidebar'], "
+                "a[href*='/app/home' i], "
+                "a[href*='/app/patients' i], "
+                "a[href*='/app/todo' i], "
+                "a[href*='logout' i]"
+            )
+            try:
+                await self._page.wait_for_selector(
+                    dashboard_selector,
+                    state="visible",
+                    timeout=30_000,
+                )
+                logger.info("[LOGIN] Dashboard markers visible — login successful")
+                self._record_log(
+                    phase, "success",
+                    "Logged in, dashboard confirmed",
+                    phase_start=phase_start,
+                )
+                return True
+            except Exception:
+                logger.warning("[LOGIN] Dashboard markers not visible within 30s — diagnosing failure")
+
+            # Diagnose why we didn't land on the dashboard.
+
+            # 1. Login form still visible → credentials rejected
+            form_still_visible = False
+            for sel in ("input#Login__UsernameField", "input#Login__Password"):
+                try:
+                    loc = self._page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=500):
+                        form_still_visible = True
+                        break
+                except Exception:
+                    continue
+
+            if form_still_visible:
+                error_text = None
+                login_error_el = await self._probe_selector("login_error", timeout_ms=2000)
+                if login_error_el:
+                    try:
+                        error_text = (await login_error_el.inner_text()).strip()[:200]
+                    except Exception:
+                        pass
+                body_snippet = await self._get_body_snippet(300)
                 return await self._fail_phase(
                     phase, "login_failed",
-                    f"Login error displayed: {error_text.strip()[:200]}",
+                    f"Login form still visible after 30s — credentials rejected. "
+                    f"Error banner: {error_text or 'none'} | Body: {body_snippet}",
                     phase_start,
                 )
 
-            # Interstitial detection: MFA/2FA, trust-device, password-change, CAPTCHA.
-            # Runs before the long dashboard probe so we fail fast with a specific
-            # reason instead of burning 2 minutes on irrelevant selectors.
+            # 2. Interstitial (OTP challenge, password expired, CAPTCHA)
             interstitial = await self._detect_post_login_interstitial()
             if interstitial:
                 reason, message = interstitial
                 return await self._fail_phase(phase, reason, message, phase_start)
 
-            # Still on /login after submit → credentials silently rejected.
-            if "/login" in post_submit_url.lower():
-                body_snippet = await self._get_body_snippet(300)
-                return await self._fail_phase(
-                    phase, "login_failed",
-                    f"URL still contains /login after submit — credentials likely "
-                    f"rejected. URL: {post_submit_url} | Body: {body_snippet}",
-                    phase_start,
-                )
-
-            # Intermittent slow loads on Railway: pre-wait on primary dashboard
-            # markers with a longer timeout than the per-candidate default.
-            # Happy path unaffected — wait returns immediately on first visible
-            # match, then _resolve_selector picks up the element in ~0ms.
-            try:
-                await self._page.wait_for_selector(
-                    "nav, #sidebar, .main-nav, [data-testid='sidebar']",
-                    state="visible",
-                    timeout=25_000,
-                )
-                logger.info("[LOGIN] Dashboard markers visible")
-            except Exception:
-                logger.warning("[LOGIN] Dashboard markers not visible within 25s — probing full candidate list")
-
-            # Confirm dashboard loaded
-            dashboard = await self._resolve_selector("dashboard_indicator")
-            if not dashboard:
-                body_snippet = await self._get_body_snippet(300)
-                return await self._fail_phase(
-                    phase, "dashboard_not_loaded",
-                    f"Dashboard selectors not found after login. "
-                    f"URL: {post_submit_url} | Title: {post_submit_title} | "
-                    f"Body: {body_snippet}",
-                    phase_start,
-                )
-
-            # Success screenshot — proof we hit the dashboard
-            await self._capture_screenshot("login_success")
-
-            self._record_log(phase, "success", "Logged in, dashboard confirmed", phase_start=phase_start)
-            return True
+            # 3. Unknown state — page is neither authenticated, nor login form, nor interstitial
+            body_snippet = await self._get_body_snippet(300)
+            return await self._fail_phase(
+                phase, "dashboard_not_loaded",
+                f"No dashboard markers, no login form, no known interstitial. "
+                f"URL: {post_submit_url} | Title: {post_submit_title} | Body: {body_snippet}",
+                phase_start,
+            )
 
         except Exception as e:
             return await self._fail_phase(phase, "login_failed", str(e), phase_start)
