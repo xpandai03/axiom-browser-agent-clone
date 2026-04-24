@@ -386,7 +386,24 @@ class TNExecutor:
                 )
             await self._safe_click(submit_el, "login submit")
 
-            # Check for login error (fast probe — don't wait long)
+            # Post-submit diagnostic — ALWAYS capture, before any long probes.
+            # This is the true landing page; any later screenshot is taken
+            # after 2+ minutes of selector thrashing and may have shifted.
+            try:
+                await self._page.wait_for_load_state("domcontentloaded", timeout=8000)
+            except Exception:
+                pass
+
+            post_submit_url = self._page.url
+            try:
+                post_submit_title = await self._page.title()
+            except Exception:
+                post_submit_title = "<unreadable>"
+            logger.info(f"[LOGIN] Post-submit URL: {post_submit_url}")
+            logger.info(f"[LOGIN] Post-submit title: {post_submit_title}")
+            await self._capture_screenshot("login_postsubmit")
+
+            # Explicit login error (e.g. "did not match any account")
             login_error = await self._probe_selector("login_error", timeout_ms=3000)
             if login_error:
                 error_text = await login_error.inner_text()
@@ -396,12 +413,33 @@ class TNExecutor:
                     phase_start,
                 )
 
+            # Interstitial detection: MFA/2FA, trust-device, password-change, CAPTCHA.
+            # Runs before the long dashboard probe so we fail fast with a specific
+            # reason instead of burning 2 minutes on irrelevant selectors.
+            interstitial = await self._detect_post_login_interstitial()
+            if interstitial:
+                reason, message = interstitial
+                return await self._fail_phase(phase, reason, message, phase_start)
+
+            # Still on /login after submit → credentials silently rejected.
+            if "/login" in post_submit_url.lower():
+                body_snippet = await self._get_body_snippet(300)
+                return await self._fail_phase(
+                    phase, "login_failed",
+                    f"URL still contains /login after submit — credentials likely "
+                    f"rejected. URL: {post_submit_url} | Body: {body_snippet}",
+                    phase_start,
+                )
+
             # Confirm dashboard loaded
             dashboard = await self._resolve_selector("dashboard_indicator")
             if not dashboard:
+                body_snippet = await self._get_body_snippet(300)
                 return await self._fail_phase(
                     phase, "dashboard_not_loaded",
-                    "Dashboard indicator not found after login",
+                    f"Dashboard selectors not found after login. "
+                    f"URL: {post_submit_url} | Title: {post_submit_title} | "
+                    f"Body: {body_snippet}",
                     phase_start,
                 )
 
@@ -413,6 +451,68 @@ class TNExecutor:
 
         except Exception as e:
             return await self._fail_phase(phase, "login_failed", str(e), phase_start)
+
+    async def _detect_post_login_interstitial(self):
+        """
+        Detect common post-login interstitials that prevent dashboard load.
+
+        Returns (failure_reason, message) tuple if detected, else None.
+        Covers: MFA/2FA prompts, device-trust pages, password-change prompts,
+        CAPTCHA challenges. Fails fast so the CRM gets an actionable reason
+        instead of a generic dashboard_not_loaded after a 2-minute timeout.
+        """
+        try:
+            url = self._page.url.lower()
+        except Exception:
+            url = ""
+
+        url_patterns = (
+            ("/mfa", "mfa_required"),
+            ("/2fa", "mfa_required"),
+            ("/otp", "mfa_required"),
+            ("/verify", "mfa_required"),
+            ("/challenge", "mfa_required"),
+        )
+        for pattern, reason in url_patterns:
+            if pattern in url:
+                return reason, f"Interstitial URL path '{pattern}' detected: {self._page.url}"
+
+        try:
+            body_text = (await self._page.inner_text("body", timeout=3000)).lower()
+        except Exception:
+            body_text = ""
+
+        signals = (
+            ("mfa_required", (
+                "multi-factor", "two-factor", "verification code",
+                "6-digit code", "authenticator app",
+                "trust this device", "remember this device",
+            )),
+            ("login_failed", (
+                "your password has expired", "change your password",
+                "update your password", "password must be changed",
+            )),
+            ("login_failed", (
+                "i'm not a robot", "prove you are human",
+                "captcha", "unusual activity",
+            )),
+        )
+        for reason, phrases in signals:
+            for phrase in phrases:
+                if phrase in body_text:
+                    return reason, f"Post-login interstitial detected: '{phrase}'"
+
+        return None
+
+    async def _get_body_snippet(self, max_chars: int = 300) -> str:
+        """Get a compact body-text snippet for diagnostic error messages."""
+        import re
+        try:
+            text = await self._page.inner_text("body", timeout=3000)
+        except Exception:
+            return "<body unreadable>"
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_chars]
 
     # ========================================================================
     # Phase 2: Navigate to New Patient Form

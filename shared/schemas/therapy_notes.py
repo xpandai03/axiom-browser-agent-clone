@@ -113,6 +113,7 @@ TNFailureReason = Literal[
     "login_failed",
     "practice_code_rejected",
     "dashboard_not_loaded",
+    "mfa_required",
     "navigation_failed",
     "new_patient_form_not_found",
     "form_field_not_found",
