@@ -431,6 +431,20 @@ class TNExecutor:
                     phase_start,
                 )
 
+            # Intermittent slow loads on Railway: pre-wait on primary dashboard
+            # markers with a longer timeout than the per-candidate default.
+            # Happy path unaffected — wait returns immediately on first visible
+            # match, then _resolve_selector picks up the element in ~0ms.
+            try:
+                await self._page.wait_for_selector(
+                    "nav, #sidebar, .main-nav, [data-testid='sidebar']",
+                    state="visible",
+                    timeout=25_000,
+                )
+                logger.info("[LOGIN] Dashboard markers visible")
+            except Exception:
+                logger.warning("[LOGIN] Dashboard markers not visible within 25s — probing full candidate list")
+
             # Confirm dashboard loaded
             dashboard = await self._resolve_selector("dashboard_indicator")
             if not dashboard:
@@ -454,53 +468,55 @@ class TNExecutor:
 
     async def _detect_post_login_interstitial(self):
         """
-        Detect common post-login interstitials that prevent dashboard load.
+        Detect post-login interstitials that prevent dashboard load.
 
         Returns (failure_reason, message) tuple if detected, else None.
-        Covers: MFA/2FA prompts, device-trust pages, password-change prompts,
-        CAPTCHA challenges. Fails fast so the CRM gets an actionable reason
-        instead of a generic dashboard_not_loaded after a 2-minute timeout.
+
+        MFA detection is deliberately narrow — URL path markers + a visible
+        OTP input field only. Body-text phrases like "two-factor" are NOT
+        matched: TN's dashboard exposes an "Enroll in Two-Factor Authentication"
+        suggestion that would false-positive on a healthy login.
         """
         try:
             url = self._page.url.lower()
         except Exception:
             url = ""
 
-        url_patterns = (
-            ("/mfa", "mfa_required"),
-            ("/2fa", "mfa_required"),
-            ("/otp", "mfa_required"),
-            ("/verify", "mfa_required"),
-            ("/challenge", "mfa_required"),
-        )
-        for pattern, reason in url_patterns:
+        for pattern in ("/mfa", "/2fa", "/otp", "/verify", "/challenge"):
             if pattern in url:
-                return reason, f"Interstitial URL path '{pattern}' detected: {self._page.url}"
+                return "mfa_required", f"Interstitial URL path '{pattern}' detected: {self._page.url}"
 
+        # Visible OTP input — strong, unambiguous MFA signal. Enrollment
+        # suggestions on the dashboard are links/buttons, not inputs.
+        otp_selectors = (
+            'input[autocomplete="one-time-code"]',
+            'input[name="otp" i]',
+            'input[name="totp" i]',
+            'input[name="mfaCode" i]',
+            'input[name="verificationCode" i]',
+            'input[name="securityCode" i]',
+        )
+        for sel in otp_selectors:
+            try:
+                loc = self._page.locator(sel).first
+                if await loc.count() > 0 and await loc.is_visible(timeout=500):
+                    return "mfa_required", f"OTP input field detected ({sel})"
+            except Exception:
+                continue
+
+        # Body-text signals: only tight blocker phrases. No MFA text — see docstring.
         try:
             body_text = (await self._page.inner_text("body", timeout=3000)).lower()
         except Exception:
             body_text = ""
 
-        signals = (
-            ("mfa_required", (
-                "multi-factor", "two-factor", "verification code",
-                "6-digit code", "authenticator app",
-                "trust this device", "remember this device",
-            )),
-            ("login_failed", (
-                "your password has expired", "change your password",
-                "update your password", "password must be changed",
-            )),
-            ("login_failed", (
-                "i'm not a robot", "prove you are human",
-                "captcha", "unusual activity",
-            )),
-        )
-        for reason, phrases in signals:
-            for phrase in phrases:
-                if phrase in body_text:
-                    return reason, f"Post-login interstitial detected: '{phrase}'"
+        for phrase in ("your password has expired", "password must be changed"):
+            if phrase in body_text:
+                return "login_failed", f"Password change required: '{phrase}'"
+
+        for phrase in ("i'm not a robot", "prove you are human"):
+            if phrase in body_text:
+                return "login_failed", f"CAPTCHA challenge detected: '{phrase}'"
 
         return None
 
