@@ -117,12 +117,23 @@ def create_app() -> FastAPI:
                 )
         return await call_next(request)
 
+    # API key middleware for /api/extract/* routes (Wolfee URL extraction)
+    from .middleware.extract_auth import extract_auth_middleware
+    app.middleware("http")(extract_auth_middleware)
+
     # CRITICAL: Include health router FIRST - it has zero heavy dependencies
     app.include_router(health_router)
 
     # Lazy load heavy routers - these import Playwright/MCP
     # Import at function call time, not module load time
-    from .routes import workflow_router, resume_router, food_delivery_router, therapy_notes_router, proxy_sanity_router
+    from .routes import (
+        workflow_router,
+        resume_router,
+        food_delivery_router,
+        therapy_notes_router,
+        extract_router,
+        proxy_sanity_router,
+    )
     from .routes.element_picker import router as element_picker_router
 
     app.include_router(workflow_router, prefix="/api")
@@ -130,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(element_picker_router, prefix="/api")
     app.include_router(food_delivery_router, prefix="/api")
     app.include_router(therapy_notes_router, prefix="/api")
+    app.include_router(extract_router, prefix="/api")
     app.include_router(proxy_sanity_router, prefix="/api")
 
     # Mount frontend static files
