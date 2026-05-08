@@ -5,10 +5,13 @@ Defines the input/output contracts for a deterministic, linear browser
 automation workflow that creates patients in TherapyNotes.
 """
 
+import logging
 from enum import Enum
 from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -57,16 +60,59 @@ class TNPatientInput(BaseModel):
     )
     zip: str = Field(
         ...,
-        description="5-digit US zip code (ZIP+4 normalized automatically)",
+        description=(
+            "5-digit US zip code. ZIP+4 (e.g. 87507-2691) is normalized to "
+            "the first 5 digits. 4-digit ZIPs are padded with a leading zero "
+            "(e.g. 7031 -> 07031) to recover from upstream leading-zero strip."
+        ),
         pattern=r"^\d{5}$",
     )
 
     @field_validator("zip", mode="before")
     @classmethod
     def normalize_zip(cls, v):
-        """Accept ZIP+4 (e.g. 87507-2691) and normalize to 5-digit."""
-        if isinstance(v, str):
-            return v.split("-")[0]
+        """
+        Normalize ZIP input before regex validation.
+
+        - ZIP+4 ("87507-2691") -> "87507"
+        - 4-digit numeric ("7031") -> "07031" (pad leading zero, log warning)
+        - 3-digit, non-numeric, empty -> ValueError with clear message
+
+        Reason: upstream pipelines (CSV ingest, Excel, JSON-from-numeric)
+        commonly strip leading zeros from northeastern US ZIPs (00xxx-09xxx).
+        Padding 4-digit ZIPs is the dominant correct fix; anything else is
+        rejected loudly so bad data does not silently land.
+        """
+        if v is None:
+            raise ValueError("ZIP is required")
+        if not isinstance(v, str):
+            v = str(v)
+        v = v.strip()
+        if not v:
+            raise ValueError("ZIP is required")
+
+        # ZIP+4 -> base 5 digits
+        v = v.split("-", 1)[0].strip()
+
+        if not v.isdigit():
+            raise ValueError(
+                f"ZIP must contain only digits (got: {v!r})"
+            )
+
+        if len(v) == 4:
+            original = v
+            v = "0" + v
+            logger.warning(
+                "[ZIP NORMALIZE] Padded 4-digit ZIP %r -> %r "
+                "(leading zero added; likely upstream zero-strip)",
+                original,
+                v,
+            )
+        elif len(v) != 5:
+            raise ValueError(
+                f"ZIP must be 5 digits (got {len(v)} digits: {v!r})"
+            )
+
         return v
 
     sex: Literal["Male", "Female"] = Field(
