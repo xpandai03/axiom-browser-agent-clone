@@ -131,6 +131,7 @@ def create_app() -> FastAPI:
         resume_router,
         food_delivery_router,
         therapy_notes_router,
+        therapy_notes_v2_router,
         extract_router,
         proxy_sanity_router,
     )
@@ -141,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(element_picker_router, prefix="/api")
     app.include_router(food_delivery_router, prefix="/api")
     app.include_router(therapy_notes_router, prefix="/api")
+    app.include_router(therapy_notes_v2_router, prefix="/api")
     app.include_router(extract_router, prefix="/api")
     app.include_router(proxy_sanity_router, prefix="/api")
 
