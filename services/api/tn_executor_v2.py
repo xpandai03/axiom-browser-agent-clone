@@ -1173,8 +1173,16 @@ class TNExecutorV2:
         - Aborts if the streamed body exceeds PDF_MAX_BYTES (25 MB).
         - Verifies first bytes are the %PDF magic header (raises PdfFormatError).
         - Returns the tempfile path. Caller owns cleanup (os.unlink in finally).
+        - Sends X-API-Key (TN_API_KEY) so the CRM's gated intake-PDF endpoint
+          authorizes the fetch. Harmless for URLs that ignore the header.
         """
         import httpx
+
+        # Authenticate to the CRM's gated PDF endpoint with the same key the V2
+        # route uses for inbound auth. Sent on every PDF fetch; targets that
+        # don't require it simply ignore the unknown header.
+        api_key = os.environ.get("TN_API_KEY")
+        headers = {"X-API-Key": api_key} if api_key else {}
 
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         path = tmp.name
@@ -1185,7 +1193,7 @@ class TNExecutorV2:
             async with httpx.AsyncClient(
                 timeout=PDF_DOWNLOAD_TIMEOUT_S, follow_redirects=True
             ) as client:
-                async with client.stream("GET", url) as resp:
+                async with client.stream("GET", url, headers=headers) as resp:
                     resp.raise_for_status()
                     with open(path, "wb") as f:
                         async for chunk in resp.aiter_bytes():
