@@ -28,3 +28,6 @@ ENV/
 .ruff_cache/
 *.log
 .DS_Store
+
+# Recon / runtime screenshots — may contain PHI, never commit
+screenshots/
