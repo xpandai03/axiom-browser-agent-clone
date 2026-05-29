@@ -867,19 +867,29 @@ class TNExecutorV2:
             zip_loc = page.locator("#AddressEditorView__PostalCodeInput_PatientAddress")
             if await zip_loc.count() == 0:
                 return await self._fail_phase(phase, "form_field_not_found", "Zip field not found", phase_start)
-            await zip_loc.click()
-            await zip_loc.fill("")
-            await page.keyboard.type(patient.zip, delay=50)
-            try:
-                await page.wait_for_function(
-                    "(selector, expected) => document.querySelector(selector).value === expected",
-                    "#AddressEditorView__PostalCodeInput_PatientAddress",
-                    patient.zip,
-                    timeout=3000,
-                )
-            except Exception:
-                pass
-            actual_zip = await zip_loc.input_value()
+            # press_sequentially types into the focused locator (not "wherever focus is")
+            # and fires real keystroke events so TN's city-autocomplete still triggers.
+            # keyboard.type proved flaky here (dropped chars → partial zip), so type,
+            # read back, and retry once before failing.
+            async def _type_zip() -> str:
+                await zip_loc.click()
+                await zip_loc.fill("")
+                await zip_loc.press_sequentially(patient.zip, delay=100)
+                try:
+                    await page.wait_for_function(
+                        "(selector, expected) => document.querySelector(selector).value === expected",
+                        "#AddressEditorView__PostalCodeInput_PatientAddress",
+                        patient.zip,
+                        timeout=3000,
+                    )
+                except Exception:
+                    pass
+                return await zip_loc.input_value()
+
+            actual_zip = await _type_zip()
+            if actual_zip != patient.zip:
+                logger.warning(f"[FILL] Zip mismatch on first attempt: '{actual_zip}' != '{patient.zip}', retrying once")
+                actual_zip = await _type_zip()
             if actual_zip != patient.zip:
                 return await self._fail_phase(phase, "form_field_not_found", f"Zip mismatch: '{actual_zip}' != '{patient.zip}'", phase_start)
             logger.info(f"[FILL] Zip: '{patient.zip}' confirmed")
