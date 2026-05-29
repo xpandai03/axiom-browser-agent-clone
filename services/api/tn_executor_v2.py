@@ -1585,6 +1585,56 @@ class TNExecutorV2:
                 typed_value = ""
             logger.info(f"[CLINICIAN] After fallback retry, input value: '{typed_value}'")
 
+        # The value lands correctly (proven via input_value), but TN's custom
+        # DynamicDropdown incremental search does NOT fire on synthetic value
+        # changes. Cascade through event-trigger strategies until result bubbles
+        # render, escalating from cheapest (dispatch events) to heaviest (JS).
+        bubbles = await self._v2_incremental_bubble_count()
+        if bubbles == 0:
+            # Attempt 1: dispatch the input/keyup events TN's JS listener expects.
+            logger.info("[CLINICIAN] Attempt 1: dispatch input + keyup events")
+            try:
+                await inp.dispatch_event("input")
+                await inp.dispatch_event("keyup")
+            except Exception as e:
+                logger.warning(f"[CLINICIAN] Attempt 1 dispatch error: {e}")
+            await asyncio.sleep(0.6)  # let the debouncer settle
+            bubbles = await self._v2_incremental_bubble_count()
+
+        if bubbles == 0:
+            # Attempt 2: real per-character keystrokes via the keyboard. type()
+            # per char emits the discrete keydown/keypress/input/keyup sequence
+            # (handles spaces/case correctly, unlike press() of a raw char).
+            logger.info("[CLINICIAN] Attempt 1 (dispatch events) failed, trying Attempt 2: char-by-char keystrokes")
+            try:
+                await inp.click()
+                await inp.focus()
+                await inp.fill("")
+                for ch in clinician_name:
+                    await page.keyboard.type(ch)
+                    await asyncio.sleep(0.08)
+            except Exception as e:
+                logger.warning(f"[CLINICIAN] Attempt 2 keystroke error: {e}")
+            await asyncio.sleep(0.6)  # let the debouncer settle
+            bubbles = await self._v2_incremental_bubble_count()
+
+        if bubbles == 0:
+            # Attempt 3: fire the events directly via JS (heaviest hammer).
+            logger.info("[CLINICIAN] Attempt 2 (keystrokes) failed, trying Attempt 3: JS event dispatch")
+            try:
+                await inp.evaluate(
+                    """(el) => {
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                    }"""
+                )
+            except Exception as e:
+                logger.warning(f"[CLINICIAN] Attempt 3 JS dispatch error: {e}")
+            await asyncio.sleep(0.6)  # let the debouncer settle
+            bubbles = await self._v2_incremental_bubble_count()
+
+        logger.info(f"[CLINICIAN] Bubbles present after trigger cascade: {bubbles}")
+
         # TN renders clinicians as 'Last, First[, Credential]', so match on name
         # tokens (order-independent) rather than the literal 'First Last' string.
         tokens = _name_tokens(clinician_name)
@@ -1719,6 +1769,31 @@ class TNExecutorV2:
             except Exception:
                 continue
         logger.info(f"[CLINICIAN] Rendered {len(texts)} bubbles {context}: {texts}")
+
+    async def _v2_incremental_bubble_count(self) -> int:
+        """Count currently-visible incremental-search result bubbles.
+
+        Used by the clinician trigger cascade to decide whether TN's search has
+        actually fired (returns >0) after each event-dispatch strategy.
+        """
+        for sel in SELECTORS_V2["appt_incremental_result"]:
+            try:
+                loc = self._page.locator(sel)
+                n = await loc.count()
+                if n == 0:
+                    continue
+                visible = 0
+                for i in range(n):
+                    try:
+                        if await loc.nth(i).is_visible():
+                            visible += 1
+                    except Exception:
+                        continue
+                if visible:
+                    return visible
+            except Exception:
+                continue
+        return 0
 
     async def _v2_appt_dialog_closed(self) -> bool:
         try:
