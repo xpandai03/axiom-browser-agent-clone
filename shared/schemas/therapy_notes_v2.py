@@ -187,6 +187,24 @@ class TNPatientInputV2(BaseModel):
         ),
     )
 
+    # ------------------------------------------------------------------
+    # Async progress callbacks (CRM v128) — all optional so older clients
+    # and tests keep working. When run_id + callback_url are present, V2
+    # POSTs per-phase progress to the CRM's tn-progress endpoint.
+    # ------------------------------------------------------------------
+    contact_id: Optional[int] = Field(
+        None,
+        description="CRM contact id; sent as contactId in progress callbacks (must match callback_url path).",
+    )
+    run_id: Optional[str] = Field(
+        None,
+        description="Opaque run id from the incoming payload, echoed back in progress callbacks.",
+    )
+    callback_url: Optional[str] = Field(
+        None,
+        description="CRM tn-progress endpoint (/api/internal/tn-progress/:contactId) to POST phase progress to.",
+    )
+
     @field_validator("intake_pdf_url", "snapshot_pdf_url")
     @classmethod
     def validate_http_url(cls, v, info):
