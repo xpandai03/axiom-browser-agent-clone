@@ -11,6 +11,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -87,12 +88,16 @@ def create_app() -> FastAPI:
         body = await request.body()
         logger.warning(f"[TN DEBUG] Validation error body: {body}")
         logger.warning(f"[TN DEBUG] Validation errors: {exc.errors()}")
+        # jsonable_encoder converts non-serializable bits (e.g. the ValueError
+        # embedded in ctx.error when a Pydantic v2 validator raises) to plain
+        # JSON. Without it, a validator-raised ValueError makes json.dumps throw
+        # and the handler 500s instead of returning a clean 422.
         return JSONResponse(
             status_code=422,
-            content={
+            content=jsonable_encoder({
                 "detail": exc.errors(),
                 "body_received": body.decode("utf-8", errors="replace"),
-            },
+            }),
         )
 
     # API key middleware for /api/tn/* routes
