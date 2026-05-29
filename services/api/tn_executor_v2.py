@@ -1504,16 +1504,53 @@ class TNExecutorV2:
                 )
 
             # I15: success indicator UNVERIFIED in recon. Observed signal = dialog
-            # closes. Smoke test must confirm/refine and update the recon doc.
+            # closes. Timeout bumped 12s->20s as cheap insurance against a slow
+            # WebForms save. Smoke test must confirm/refine and update recon doc.
             closed = await self._poll_condition(
                 condition_fn=self._v2_appt_dialog_closed,
                 description="appointment dialog closed",
-                timeout_ms=12000,
+                timeout_ms=20000,
             )
             await asyncio.sleep(2)  # settle
             await self._debug_screenshot("schedule_appointment_complete")
 
             if not closed:
+                # TEMP DIAG: the dialog-closed heuristic is unverified. Dump the
+                # dialog state so we can see whether save actually committed
+                # (dialog gone / success marker) vs. is stuck on a validation
+                # error vs. needs a different button (Done/Close).
+                try:
+                    dialog_state = await page.evaluate(
+                        """() => {
+                            const dialog = document.querySelector('[role="dialog"]')
+                                || document.querySelector('.psy-dialog')
+                                || document.querySelector('.CalendarEntryEditor');
+                            if (!dialog) return { dialogFound: false, url: location.href };
+                            return {
+                                dialogFound: true,
+                                url: location.href,
+                                visible: dialog.offsetParent !== null,
+                                classes: dialog.className,
+                                outerHTML_first_3000: dialog.outerHTML.substring(0, 3000),
+                                errorMessages: Array.from(dialog.querySelectorAll('.error, .validation-error, .error-message, [class*="error"], [class*="Error"]'))
+                                    .map(e => ({ text: e.textContent.trim(), classes: e.className }))
+                                    .filter(e => e.text.length > 0),
+                                buttons: Array.from(dialog.querySelectorAll('button, input[type="button"], input[type="submit"]'))
+                                    .map(b => ({
+                                        text: (b.textContent || b.value || '').trim(),
+                                        classes: b.className,
+                                        disabled: b.disabled,
+                                        visible: b.offsetParent !== null
+                                    })),
+                                successMarkers: Array.from(dialog.querySelectorAll('.success, [class*="success"], [class*="Success"]'))
+                                    .map(e => e.textContent.trim()).filter(t => t.length > 0)
+                            };
+                        }"""
+                    )
+                    logger.info(f"[DIAG] APPOINTMENT DIALOG state at save-timeout: {dialog_state}")
+                except Exception as e:
+                    logger.warning(f"[DIAG] Could not capture dialog state: {e}")
+
                 return await self._fail_phase(
                     phase, "appointment_creation_failed",
                     "Appointment dialog did not close after Save and no explicit error was shown",
