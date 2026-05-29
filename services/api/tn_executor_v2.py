@@ -32,6 +32,7 @@ Phases:
 import asyncio
 import logging
 import os
+import re
 import tempfile
 import time
 from typing import List, Optional
@@ -227,6 +228,16 @@ SELECTORS_V2 = {
 # PDF download limits (Step 3, decision I12)
 PDF_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
 PDF_DOWNLOAD_TIMEOUT_S = 30
+
+
+def _name_tokens(text: str) -> List[str]:
+    """Lowercase a name and split into alphanumeric tokens, dropping punctuation.
+
+    'Amanda Davison' -> ['amanda', 'davison']
+    'Davison, Amanda, LPC' -> ['davison', 'amanda', 'lpc']
+    Used for order-independent clinician matching (TN renders 'Last, First').
+    """
+    return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
 
 
 class PdfFormatError(Exception):
@@ -1537,18 +1548,31 @@ class TNExecutorV2:
             pass
         await inp.press_sequentially(clinician_name, delay=80)
 
+        # TN renders clinicians as 'Last, First[, Credential]', so match on name
+        # tokens (order-independent) rather than the literal 'First Last' string.
+        tokens = _name_tokens(clinician_name)
+
+        # Diagnostic snapshot: let bubbles render, then log what actually appeared.
+        await asyncio.sleep(1.2)
+        await self._v2_dump_incremental_bubbles(f"after typing '{clinician_name}'")
+
         found = await self._poll_condition(
-            condition_fn=lambda: self._v2_incremental_result_visible(clinician_name),
+            condition_fn=lambda: self._v2_incremental_result_visible(
+                clinician_name, match_tokens=tokens
+            ),
             description=f"clinician result '{clinician_name}'",
             timeout_ms=5000,
         )
         if not found:
+            await self._v2_dump_incremental_bubbles(f"at failure for '{clinician_name}'")
             return await self._fail_phase(
                 phase, "clinician_selection_failed",
                 f"No clinician match for '{clinician_name}' in dropdown",
                 phase_start,
             )
-        if not await self._click_incremental_result(clinician_name, "clinician"):
+        if not await self._click_incremental_result(
+            clinician_name, "clinician", match_tokens=tokens
+        ):
             return await self._fail_phase(
                 phase, "clinician_selection_failed",
                 f"Could not click clinician result '{clinician_name}'",
@@ -1558,8 +1582,23 @@ class TNExecutorV2:
         logger.info(f"[SCHEDULE] Clinician selected: {clinician_name}")
         return True
 
-    async def _click_incremental_result(self, text: str, label: str) -> bool:
-        """Click the incremental-search result bubble whose text matches `text`."""
+    async def _click_incremental_result(
+        self, text: str, label: str, match_tokens: Optional[List[str]] = None
+    ) -> bool:
+        """Click the incremental-search result bubble matching `text`.
+
+        Default (match_tokens=None): exact substring via Playwright has_text —
+        used by the patient flow, which renders 'First Last DOB: ...'.
+        match_tokens set: pick the first visible bubble whose tokens are a
+        superset of match_tokens (order-independent) — used by the clinician
+        flow, which renders 'Last, First[, Credential]'.
+        """
+        if match_tokens is not None:
+            loc = await self._find_incremental_bubble_by_tokens(match_tokens)
+            if loc is not None:
+                await self._safe_click(loc, f"{label} result '{text}'")
+                return True
+            return False
         for sel in SELECTORS_V2["appt_incremental_result"]:
             try:
                 loc = self._page.locator(sel).filter(has_text=text).first
@@ -1570,7 +1609,11 @@ class TNExecutorV2:
                 continue
         return False
 
-    async def _v2_incremental_result_visible(self, text: str) -> bool:
+    async def _v2_incremental_result_visible(
+        self, text: str, match_tokens: Optional[List[str]] = None
+    ) -> bool:
+        if match_tokens is not None:
+            return (await self._find_incremental_bubble_by_tokens(match_tokens)) is not None
         for sel in SELECTORS_V2["appt_incremental_result"]:
             try:
                 loc = self._page.locator(sel).filter(has_text=text)
@@ -1579,6 +1622,66 @@ class TNExecutorV2:
             except Exception:
                 continue
         return False
+
+    async def _find_incremental_bubble_by_tokens(self, match_tokens: List[str]):
+        """Return the first visible incremental-search bubble whose tokens are a
+        superset of `match_tokens` (case-insensitive, order-independent), or None.
+
+        Logs a warning if more than one bubble matches (picks the first).
+        """
+        want = set(match_tokens)
+        matches = []
+        for sel in SELECTORS_V2["appt_incremental_result"]:
+            try:
+                loc = self._page.locator(sel)
+                n = await loc.count()
+                for i in range(n):
+                    item = loc.nth(i)
+                    try:
+                        if not await item.is_visible():
+                            continue
+                        txt = await item.inner_text()
+                    except Exception:
+                        continue
+                    if want.issubset(set(_name_tokens(txt))):
+                        matches.append((item, txt.strip()))
+            except Exception:
+                continue
+            if matches:
+                break  # first selector tier that yields matches wins
+        if not matches:
+            return None
+        if len(matches) > 1:
+            picked = matches[0][1]
+            others = [m[1] for m in matches[1:]]
+            logger.warning(
+                f"[CLINICIAN] Multiple matches for tokens {match_tokens} — "
+                f"picking first: '{picked}' (others: {others})"
+            )
+        return matches[0][0]
+
+    async def _v2_dump_incremental_bubbles(self, context: str) -> None:
+        """Log the count + text of all rendered incremental-search bubbles.
+
+        Diagnostic only — settles whether bubbles render at all and in what
+        text format (e.g. 'Last, First') when a match fails.
+        """
+        texts: List[str] = []
+        for sel in SELECTORS_V2["appt_incremental_result"]:
+            try:
+                loc = self._page.locator(sel)
+                n = await loc.count()
+                if n == 0:
+                    continue
+                for i in range(n):
+                    try:
+                        texts.append((await loc.nth(i).inner_text()).strip())
+                    except Exception:
+                        continue
+                break  # report the first tier that has bubbles
+            except Exception:
+                continue
+        logger.info(f"[CLINICIAN] Rendered {len(texts)} bubbles {context}: {texts}")
 
     async def _v2_appt_dialog_closed(self) -> bool:
         try:
