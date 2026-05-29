@@ -32,6 +32,7 @@ Phases:
 import asyncio
 import logging
 import os
+import tempfile
 import time
 from typing import List, Optional
 
@@ -136,6 +137,103 @@ SELECTORS = {
 
 
 # ============================================================================
+# SELECTORS_V2 — Step 3 phases (PDF upload + scheduling)
+# Source of truth: docs/selectors/tn_v2_phases.md (recon 2026-05-28)
+# ============================================================================
+
+SELECTORS_V2 = {
+    # ---- Documents tab + upload modal ----
+    "documents_tab": [
+        "a[href='#tab=Documents']",
+        "li:has-text('Documents') a",
+    ],
+    "upload_patient_file_button": [
+        "button:has-text('Upload Patient File')",
+    ],
+    "file_input": [
+        "#InputUploader",
+        "input[type=file][name='InputUploader']",
+        "input[type=file]",
+    ],
+    "document_name_input": [
+        "#PatientFile__DocumentName",
+        "input[maxlength='128']",
+    ],
+    "add_document_button_enabled": [
+        "input[value='Add Document']:not([disabled])",
+    ],
+    "add_document_button": [
+        "input[value='Add Document']",
+    ],
+    "upload_success_banner": [
+        "div.standard-banner-message",
+    ],
+    "document_list_rows": [
+        "tr.Row",
+        "tr.AlternateRow",
+    ],
+    "dialog_close_button": [
+        "button.DialogCloseButton",
+    ],
+
+    # ---- Scheduling navigation ----
+    "scheduling_nav": [
+        "a[href='/app/scheduling/']",
+        "a:has-text('Scheduling')",
+    ],
+
+    # ---- New appointment dialog ----
+    "new_appointment_button": [
+        "#ButtonCreateAppointment",
+        "psy-button:has-text('+ New')",
+    ],
+    "appt_patient_search": [
+        "input#CalendarEntryEditor__PatientSelect",
+    ],
+    # Incremental-search result bubbles (shared shape for patient + clinician)
+    "appt_incremental_result": [
+        ".IncrementalSearchContainerNode .ContentBubble.IncrementalSearch",
+        ".ContentBubble.IncrementalSearch",
+    ],
+    "appt_type_select": [
+        "select#CalendarEntryEditor__TypeSelect",
+    ],
+    "appt_telehealth_checkbox": [
+        "input#CalendarEntryEditor__TelehealthCheckbox",
+    ],
+    "appt_start_date": [
+        "input#CalendarEntryEditor__StartDateInput",
+    ],
+    "appt_start_time": [
+        "input#CalendarEntryEditor__StartTimeInput",
+    ],
+    "appt_clinician_dropdown": [
+        "#CalendarEntryEditor__ClinicianSelect",
+    ],
+    "appt_clinician_input": [
+        "#CalendarEntryEditor__ClinicianSelect input.DynamicInputTextBox",
+        "#CalendarEntryEditor__ClinicianSelect input",
+    ],
+    "appt_alert_textarea": [
+        "#CalendarEntryEditor__RemindersTextArea",
+        "textarea[name='CalendarEntryEditor__RemindersTextArea']",
+    ],
+    "appt_save_button": [
+        "#CalendarEntryEditor__Create-Button",
+        "input[value='Save New Appointment']",
+    ],
+}
+
+# PDF download limits (Step 3, decision I12)
+PDF_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
+PDF_DOWNLOAD_TIMEOUT_S = 30
+
+
+class PdfFormatError(Exception):
+    """Raised when a downloaded file fails the %PDF magic-byte check."""
+
+
+# ============================================================================
 # Screenshot directory
 # ============================================================================
 
@@ -220,6 +318,28 @@ class TNExecutorV2:
 
             # ------ Phase 5: Save patient ------
             result = await self._phase_save_patient(patient)
+            if not result:
+                return self._build_failure_output()
+
+            # ====================================================================
+            # Step 3 — extended phases 6-8 (run only after a successful save).
+            # Decision I2: strictly sequential, halt on first failure.
+            # Decision I3: on failure here the patient already exists, so
+            # _build_failure_output carries tn_patient_url/tn_patient_id.
+            # ====================================================================
+
+            # ------ Phase 6: Upload intake referral PDF ------
+            result = await self._phase_upload_intake_pdf(patient)
+            if not result:
+                return self._build_failure_output()
+
+            # ------ Phase 7: Upload appointment-confirmation snapshot PDF ------
+            result = await self._phase_upload_snapshot_pdf(patient)
+            if not result:
+                return self._build_failure_output()
+
+            # ------ Phase 8: Schedule the initial appointment ------
+            result = await self._phase_schedule_appointment(patient)
             if not result:
                 return self._build_failure_output()
 
@@ -972,6 +1092,530 @@ class TNExecutorV2:
             return await self._fail_phase(phase, "save_failed", str(e), phase_start)
 
     # ========================================================================
+    # Step 3 — Phase 6/7: PDF upload (intake + snapshot)
+    # ========================================================================
+
+    async def _phase_upload_intake_pdf(self, patient: TNPatientInputV2) -> bool:
+        """Download the intake PDF and upload it as 'Intake Referral'."""
+        phase = TNPhaseV2.UPLOAD_INTAKE_PDF
+        phase_start = time.time()
+        logger.info("=" * 70)
+        logger.info("PHASE 6: UPLOAD INTAKE PDF")
+        logger.info("=" * 70)
+        return await self._run_pdf_upload_phase(
+            phase=phase,
+            phase_start=phase_start,
+            url=patient.intake_pdf_url,
+            document_name="Intake Referral",
+            upload_fail_reason="intake_pdf_upload_failed",
+        )
+
+    async def _phase_upload_snapshot_pdf(self, patient: TNPatientInputV2) -> bool:
+        """Download the snapshot PDF and upload it as 'Initial Appointment Confirmation Email'."""
+        phase = TNPhaseV2.UPLOAD_SNAPSHOT_PDF
+        phase_start = time.time()
+        logger.info("=" * 70)
+        logger.info("PHASE 7: UPLOAD SNAPSHOT PDF")
+        logger.info("=" * 70)
+        return await self._run_pdf_upload_phase(
+            phase=phase,
+            phase_start=phase_start,
+            url=patient.snapshot_pdf_url,
+            document_name="Initial Appointment Confirmation Email",
+            upload_fail_reason="snapshot_pdf_upload_failed",
+        )
+
+    async def _run_pdf_upload_phase(
+        self,
+        phase: TNPhaseV2,
+        phase_start: float,
+        url: str,
+        document_name: str,
+        upload_fail_reason: TNFailureReasonV2,
+    ) -> bool:
+        """Shared body for both PDF upload phases: download -> upload -> cleanup."""
+        if not getattr(self, "_tn_patient_url", None):
+            return await self._fail_phase(
+                phase, "pdf_upload_ui_not_found",
+                "No patient URL available from the save phase — cannot locate the record",
+                phase_start,
+            )
+
+        pdf_path = None
+        try:
+            try:
+                pdf_path = await self._download_pdf_to_tempfile(url)
+            except PdfFormatError as e:
+                return await self._fail_phase(phase, "pdf_unsupported_format", str(e), phase_start)
+            except Exception as e:
+                return await self._fail_phase(
+                    phase, "pdf_download_failed",
+                    f"PDF download failed for {document_name!r}: {e}",
+                    phase_start,
+                )
+
+            return await self._upload_pdf_to_patient(
+                self._tn_patient_url, pdf_path, document_name, phase, upload_fail_reason
+            )
+        finally:
+            if pdf_path:
+                try:
+                    os.unlink(pdf_path)
+                    logger.info(f"[PDF] Tempfile cleaned up: {pdf_path}")
+                except OSError as e:
+                    logger.warning(f"[PDF] Tempfile cleanup failed for {pdf_path}: {e}")
+
+    async def _download_pdf_to_tempfile(self, url: str) -> str:
+        """
+        Download a PDF from `url` to a tempfile (decision I12).
+
+        - 30s total timeout, follows redirects.
+        - Aborts if the streamed body exceeds PDF_MAX_BYTES (25 MB).
+        - Verifies first bytes are the %PDF magic header (raises PdfFormatError).
+        - Returns the tempfile path. Caller owns cleanup (os.unlink in finally).
+        """
+        import httpx
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        path = tmp.name
+        tmp.close()
+
+        total = 0
+        try:
+            async with httpx.AsyncClient(
+                timeout=PDF_DOWNLOAD_TIMEOUT_S, follow_redirects=True
+            ) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    with open(path, "wb") as f:
+                        async for chunk in resp.aiter_bytes():
+                            total += len(chunk)
+                            if total > PDF_MAX_BYTES:
+                                raise ValueError(
+                                    f"PDF exceeds max size {PDF_MAX_BYTES} bytes"
+                                )
+                            f.write(chunk)
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+
+        # Magic-byte check — do not trust caller-provided URLs to be PDFs.
+        with open(path, "rb") as f:
+            head = f.read(5)
+        if not head.startswith(b"%PDF"):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise PdfFormatError(
+                f"Downloaded file is not a PDF (magic bytes: {head!r}, {total} bytes)"
+            )
+
+        logger.info(f"[PDF] Downloaded {total} bytes -> {path}")
+        return path
+
+    async def _upload_pdf_to_patient(
+        self,
+        patient_url: str,
+        pdf_path: str,
+        document_name: str,
+        phase: TNPhaseV2,
+        upload_fail_reason: TNFailureReasonV2,
+    ) -> bool:
+        """
+        Upload a PDF to the patient's record via the Documents tab modal.
+
+        Pre-condition: page is on the patient record (any tab). Steps mirror the
+        recon (docs/selectors/tn_v2_phases.md): Documents tab -> Upload Patient
+        File -> set file -> type name -> Escape -> wait Add Document enabled ->
+        click -> confirm via new list row / success banner.
+        """
+        phase_start = time.time()
+        page = self._page
+
+        # Defensive: ensure we're on the right patient record before uploading.
+        if patient_url and patient_url.rstrip("/") not in page.url:
+            try:
+                await page.goto(patient_url, wait_until="domcontentloaded", timeout=self.STEP_TIMEOUT_MS)
+                await asyncio.sleep(1)
+            except Exception:
+                pass
+
+        await self._dismiss_blocking_dialogs()
+
+        # Documents tab
+        tab = await self._resolve_v2("documents_tab")
+        if not tab:
+            return await self._fail_phase(phase, "pdf_upload_ui_not_found", "Documents tab not found", phase_start)
+        await self._safe_click(tab, "Documents tab")
+        await asyncio.sleep(1.5)
+
+        # Upload Patient File
+        upload_btn = await self._resolve_v2("upload_patient_file_button")
+        if not upload_btn:
+            return await self._fail_phase(phase, "pdf_upload_ui_not_found", "'Upload Patient File' button not found", phase_start)
+        await self._safe_click(upload_btn, "Upload Patient File")
+        await asyncio.sleep(1.5)
+
+        # File input (set_input_files works on the native input even if styled)
+        file_in = page.locator(SELECTORS_V2["file_input"][0]).first
+        if await file_in.count() == 0:
+            return await self._fail_phase(phase, "pdf_upload_ui_not_found", "File input #InputUploader not found", phase_start)
+        await file_in.set_input_files(pdf_path)
+
+        # Document Name (free text, verbatim) + dismiss autocomplete (I4)
+        name_in = await self._resolve_v2("document_name_input")
+        if not name_in:
+            return await self._fail_phase(phase, "pdf_upload_ui_not_found", "Document name input not found", phase_start)
+        await name_in.fill(document_name)
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.4)
+
+        # Wait for 'Add Document' to enable (I5 — disabled until file processed)
+        enabled = await self._poll_condition(
+            condition_fn=self._v2_add_document_enabled,
+            description="'Add Document' enabled",
+            timeout_ms=10000,
+        )
+        if not enabled:
+            return await self._fail_phase(
+                phase, upload_fail_reason,
+                f"'Add Document' never enabled for {document_name!r} (file may not have processed)",
+                phase_start,
+            )
+
+        add_btn = page.locator(SELECTORS_V2["add_document_button_enabled"][0]).first
+        await self._safe_click(add_btn, "Add Document")
+
+        # Confirm: a list row containing the exact document name (strong signal),
+        # or the success banner (secondary).
+        ok = await self._poll_condition(
+            condition_fn=lambda: self._v2_upload_succeeded(document_name),
+            description=f"document '{document_name}' uploaded",
+            timeout_ms=15000,
+        )
+        if not ok:
+            return await self._fail_phase(
+                phase, upload_fail_reason,
+                f"Upload of {document_name!r} not confirmed (no list row / banner)",
+                phase_start,
+            )
+
+        await self._debug_screenshot(f"{phase.value}_uploaded")
+        self._record_log(phase, "success", f"Uploaded '{document_name}'", phase_start=phase_start)
+        logger.info(f"[UPLOAD] '{document_name}' confirmed")
+        return True
+
+    async def _v2_add_document_enabled(self) -> bool:
+        try:
+            return await self._page.locator(
+                SELECTORS_V2["add_document_button_enabled"][0]
+            ).count() > 0
+        except Exception:
+            return False
+
+    async def _v2_upload_succeeded(self, document_name: str) -> bool:
+        # Strong signal: a document list row containing the exact name.
+        try:
+            if await self._page.locator(f'tr:has-text("{document_name}")').count() > 0:
+                return True
+        except Exception:
+            pass
+        # Secondary: success banner visible.
+        try:
+            banner = self._page.locator(SELECTORS_V2["upload_success_banner"][0]).first
+            if await banner.count() > 0 and await banner.is_visible():
+                return True
+        except Exception:
+            pass
+        return False
+
+    # ========================================================================
+    # Step 3 — Phase 8: Schedule appointment
+    # ========================================================================
+
+    async def _phase_schedule_appointment(self, patient: TNPatientInputV2) -> bool:
+        """Navigate to scheduling and create the initial appointment via the dialog."""
+        phase = TNPhaseV2.SCHEDULE_APPOINTMENT
+        phase_start = time.time()
+        logger.info("=" * 70)
+        logger.info("PHASE 8: SCHEDULE APPOINTMENT")
+        logger.info("=" * 70)
+        page = self._page
+
+        try:
+            # Navigate to scheduling
+            await page.goto(
+                "https://www.therapynotes.com/app/scheduling/",
+                wait_until="domcontentloaded",
+                timeout=self.STEP_TIMEOUT_MS,
+            )
+            await asyncio.sleep(2)
+            await self._dismiss_blocking_dialogs()
+
+            # Open the New Appointment dialog
+            new_btn = await self._resolve_v2("new_appointment_button")
+            if not new_btn:
+                return await self._fail_phase(
+                    phase, "scheduling_ui_not_found",
+                    "'+ New' appointment button not found on scheduling page",
+                    phase_start,
+                )
+            await self._safe_click(new_btn, "+ New appointment")
+            await asyncio.sleep(2.5)
+
+            # Patient search (existing patient — already created in earlier phases)
+            ps = await self._resolve_v2("appt_patient_search")
+            if not ps:
+                return await self._fail_phase(
+                    phase, "scheduling_ui_not_found",
+                    "Patient search field not found in appointment dialog",
+                    phase_start,
+                )
+            full_name = f"{patient.first_name} {patient.last_name}"
+            await ps.click()
+            await ps.fill("")
+            await ps.press_sequentially(full_name, delay=80)
+            found = await self._poll_condition(
+                condition_fn=lambda: self._v2_incremental_result_visible(full_name),
+                description=f"patient result '{full_name}'",
+                timeout_ms=6000,
+            )
+            if not found:
+                return await self._fail_phase(
+                    phase, "appointment_creation_failed",
+                    f"Patient '{full_name}' not found in scheduler search "
+                    "(patient may not have persisted / search index lag)",
+                    phase_start,
+                )
+            if not await self._click_incremental_result(full_name, "patient"):
+                return await self._fail_phase(
+                    phase, "appointment_creation_failed",
+                    f"Could not click patient result '{full_name}'",
+                    phase_start,
+                )
+            await asyncio.sleep(1.5)
+
+            # Appointment Type = Therapy Intake (value 0) — I6
+            type_sel = await self._resolve_v2("appt_type_select")
+            if not type_sel:
+                return await self._fail_phase(
+                    phase, "appointment_creation_failed",
+                    "Appointment Type <select> not found",
+                    phase_start,
+                )
+            await page.select_option(SELECTORS_V2["appt_type_select"][0], value="0")
+            await asyncio.sleep(1.5)
+
+            # Modality inference — I8: check Telehealth iff alert text mentions it
+            if "telehealth" in patient.appointment_alert_text.lower():
+                try:
+                    cb = page.locator(SELECTORS_V2["appt_telehealth_checkbox"][0]).first
+                    if await cb.count() > 0 and not await cb.is_checked():
+                        await cb.check()
+                        logger.info("[SCHEDULE] Telehealth checkbox set (alert text contains 'Telehealth')")
+                except Exception as e:
+                    logger.warning(f"[SCHEDULE] Telehealth checkbox set failed: {e}")
+
+            # Date + time, verbatim — I9
+            d = await self._resolve_v2("appt_start_date")
+            if not d:
+                return await self._fail_phase(phase, "appointment_creation_failed", "Start date input not found", phase_start)
+            await d.fill(patient.appointment_date)
+            t = await self._resolve_v2("appt_start_time")
+            if not t:
+                return await self._fail_phase(phase, "appointment_creation_failed", "Start time input not found", phase_start)
+            await t.fill(patient.appointment_time)
+
+            # Clinician — manual select via type-to-filter DynamicDropdown (I7)
+            if not await self._select_clinician(patient.clinician_name, phase, phase_start):
+                return False  # _select_clinician already recorded the failure
+
+            # Appointment Alert (free-text textarea)
+            alert = await self._resolve_v2("appt_alert_textarea")
+            if not alert:
+                return await self._fail_phase(phase, "appointment_creation_failed", "Appointment Alert textarea not found", phase_start)
+            await alert.fill(patient.appointment_alert_text)
+
+            # Save — I14
+            save = await self._resolve_v2("appt_save_button")
+            if not save:
+                return await self._fail_phase(phase, "appointment_creation_failed", "'Save New Appointment' button not found", phase_start)
+            await self._safe_click(save, "Save New Appointment")
+            await asyncio.sleep(2)
+
+            # Explicit error banner first (validation / conflict / missing field)
+            err = await self._v2_scheduling_error()
+            if err:
+                return await self._fail_phase(
+                    phase, "appointment_creation_failed",
+                    f"Appointment save error: {err}",
+                    phase_start,
+                )
+
+            # I15: success indicator UNVERIFIED in recon. Observed signal = dialog
+            # closes. Smoke test must confirm/refine and update the recon doc.
+            closed = await self._poll_condition(
+                condition_fn=self._v2_appt_dialog_closed,
+                description="appointment dialog closed",
+                timeout_ms=12000,
+            )
+            await asyncio.sleep(2)  # settle
+            await self._debug_screenshot("schedule_appointment_complete")
+
+            if not closed:
+                return await self._fail_phase(
+                    phase, "appointment_creation_failed",
+                    "Appointment dialog did not close after Save and no explicit error was shown",
+                    phase_start,
+                )
+
+            self._record_log(
+                phase, "success",
+                f"Appointment scheduled ({patient.appointment_date} {patient.appointment_time}, "
+                f"clinician '{patient.clinician_name}')",
+                phase_start=phase_start,
+            )
+            logger.info("[SCHEDULE] Appointment created (dialog closed; verify selector in smoke test)")
+            return True
+
+        except Exception as e:
+            return await self._fail_phase(phase, "appointment_creation_failed", str(e), phase_start)
+
+    async def _select_clinician(
+        self, clinician_name: str, phase: TNPhaseV2, phase_start: float
+    ) -> bool:
+        """
+        Select a clinician via the type-to-filter DynamicDropdown
+        (#CalendarEntryEditor__ClinicianSelect). Click to activate -> type name
+        into the inner input -> wait for incremental-search result -> click match.
+        0 results => clinician_selection_failed.
+        """
+        page = self._page
+
+        # Activate the dropdown so its inner textbox appears
+        dd = await self._resolve_v2("appt_clinician_dropdown")
+        if dd:
+            try:
+                await dd.click()
+            except Exception:
+                pass
+        await asyncio.sleep(0.5)
+
+        inp = await self._resolve_v2("appt_clinician_input")
+        if not inp:
+            return await self._fail_phase(
+                phase, "clinician_selection_failed",
+                "Clinician DynamicDropdown input not found",
+                phase_start,
+            )
+        try:
+            await inp.click()
+            await inp.fill("")
+        except Exception:
+            pass
+        await inp.press_sequentially(clinician_name, delay=80)
+
+        found = await self._poll_condition(
+            condition_fn=lambda: self._v2_incremental_result_visible(clinician_name),
+            description=f"clinician result '{clinician_name}'",
+            timeout_ms=5000,
+        )
+        if not found:
+            return await self._fail_phase(
+                phase, "clinician_selection_failed",
+                f"No clinician match for '{clinician_name}' in dropdown",
+                phase_start,
+            )
+        if not await self._click_incremental_result(clinician_name, "clinician"):
+            return await self._fail_phase(
+                phase, "clinician_selection_failed",
+                f"Could not click clinician result '{clinician_name}'",
+                phase_start,
+            )
+        await asyncio.sleep(1)
+        logger.info(f"[SCHEDULE] Clinician selected: {clinician_name}")
+        return True
+
+    async def _click_incremental_result(self, text: str, label: str) -> bool:
+        """Click the incremental-search result bubble whose text matches `text`."""
+        for sel in SELECTORS_V2["appt_incremental_result"]:
+            try:
+                loc = self._page.locator(sel).filter(has_text=text).first
+                if await loc.count() > 0:
+                    await self._safe_click(loc, f"{label} result '{text}'")
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _v2_incremental_result_visible(self, text: str) -> bool:
+        for sel in SELECTORS_V2["appt_incremental_result"]:
+            try:
+                loc = self._page.locator(sel).filter(has_text=text)
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _v2_appt_dialog_closed(self) -> bool:
+        try:
+            dlg = self._page.locator(".Dialog, [role='dialog']")
+            n = await dlg.count()
+            if n == 0:
+                return True
+            for i in range(n):
+                try:
+                    if await dlg.nth(i).is_visible():
+                        return False
+                except Exception:
+                    continue
+            return True
+        except Exception:
+            return True
+
+    async def _v2_scheduling_error(self) -> Optional[str]:
+        try:
+            return await self._page.evaluate(
+                """() => {
+                    const sels = ['.validation-summary-errors', '.field-validation-error',
+                                  '.input-validation-error', '.alert-danger', '[role="alert"]'];
+                    for (const s of sels) {
+                        const e = document.querySelector(s);
+                        if (e && e.offsetParent !== null) {
+                            const t = (e.innerText || '').trim();
+                            if (t) return t.slice(0, 200);
+                        }
+                    }
+                    return null;
+                }"""
+            )
+        except Exception:
+            return None
+
+    async def _resolve_v2(self, key: str, state: str = "visible", timeout_ms: Optional[int] = None):
+        """Resolve a SELECTORS_V2 candidate list to a Playwright Locator (first match), or None."""
+        timeout_ms = timeout_ms or self.STEP_TIMEOUT_MS
+        for sel in SELECTORS_V2.get(key, []):
+            try:
+                loc = self._page.locator(sel).first
+                await loc.wait_for(state=state, timeout=timeout_ms)
+                return loc
+            except Exception:
+                continue
+        logger.warning(f"[SELECTOR_V2] All candidates failed for: {key}")
+        return None
+
+    async def _debug_screenshot(self, label: str) -> None:
+        """Capture a screenshot only when TN_DEBUG_MODE=true (PHI gating per recon)."""
+        if os.environ.get("TN_DEBUG_MODE", "false").lower() == "true":
+            await self._capture_screenshot(label)
+
+    # ========================================================================
     # Selector Resolution — tries candidates in order, returns first match
     # ========================================================================
 
@@ -1233,6 +1877,9 @@ class TNExecutorV2:
             message=message,
             logs=self._logs,
             duration_ms=self._elapsed_ms(),
+            # Partial-success (I3): patient may already exist if a post-save phase failed
+            tn_patient_url=getattr(self, "_tn_patient_url", None),
+            tn_patient_id=getattr(self, "_tn_patient_id", None),
         )
 
     def _elapsed_ms(self) -> int:
