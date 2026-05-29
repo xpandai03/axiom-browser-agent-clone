@@ -245,6 +245,60 @@ class PdfFormatError(Exception):
 
 
 # ============================================================================
+# Progress callbacks → CRM tn-progress endpoint (CRM v128)
+# ============================================================================
+
+async def _emit_progress(
+    callback_url: Optional[str],
+    api_key: str,
+    contact_id: Optional[int],
+    run_id: Optional[str],
+    phase: str,
+    status: str,
+    message: str,
+    metadata: Optional[dict] = None,
+) -> None:
+    """
+    Best-effort POST to the CRM's /api/internal/tn-progress/:contactId endpoint.
+
+    Fire-and-forget: any failure (network, non-200, bad config) is logged but
+    NEVER raised — progress reporting must not be able to fail the TN workflow.
+    Silently skips when callbacks aren't configured (no callback_url/run_id).
+    """
+    if not callback_url or not run_id or contact_id is None:
+        return  # not configured → silent skip
+
+    payload = {
+        "contactId": contact_id,
+        "runId": run_id,
+        "phase": phase,
+        "status": status,
+        "message": message,
+    }
+    if metadata:
+        payload["metadata"] = metadata
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                callback_url,
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json=payload,
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    f"[CALLBACK] Progress event rejected: phase={phase} status={status} "
+                    f"http={response.status_code} body={response.text[:200]}"
+                )
+            else:
+                logger.info(f"[CALLBACK] Sent: phase={phase} status={status}")
+    except Exception as e:
+        logger.warning(f"[CALLBACK] Failed to send progress event phase={phase}: {e}")
+    # Never raises — callbacks are best-effort.
+
+
+# ============================================================================
 # Screenshot directory
 # ============================================================================
 
@@ -298,39 +352,55 @@ class TNExecutorV2:
         """
         self._start_time = time.time()
         self._logs = []
+        self._patient = patient  # carry callback config (run_id/callback_url/contact_id)
 
         try:
             self._page = await self._runtime.ensure_browser()
 
-            # ------ Phase 0: Entry ------
-            result = await self._phase_entry()
-            if not result:
-                return self._build_failure_output()
+            full_name = f"{patient.first_name} {patient.last_name}"
 
-            # ------ Phase 1: Login ------
-            result = await self._phase_login()
-            if not result:
-                return self._build_failure_output()
+            # Each _step emits started → ok/failed around its phase. Phase 3
+            # (form detection) is internal and intentionally has no callback.
+            # On any failure, _finish_failure emits the terminal workflow_complete.
+            if not await self._step(
+                "entry", "Starting TherapyNotes entry",
+                self._phase_entry(), "Practice code accepted, login form loaded",
+            ):
+                return await self._finish_failure()
 
-            # ------ Phase 2: Navigate to Patients page ------
-            result = await self._phase_navigate()
-            if not result:
-                return self._build_failure_output()
+            if not await self._step(
+                "login", "Authenticating to TherapyNotes",
+                self._phase_login(), "Logged in, dashboard confirmed",
+            ):
+                return await self._finish_failure()
 
-            # ------ Phase 3: Detect New Patient form ------
-            result = await self._phase_detect_form()
-            if not result:
-                return self._build_failure_output()
+            if not await self._step(
+                "navigate", "Navigating to Patients",
+                self._phase_navigate(), "Patients page loaded",
+            ):
+                return await self._finish_failure()
 
-            # ------ Phase 4: Fill required fields ------
-            result = await self._phase_fill_required(patient)
-            if not result:
-                return self._build_failure_output()
+            # ------ Phase 3: Detect New Patient form (internal, no callback) ------
+            if not await self._phase_detect_form():
+                return await self._finish_failure()
 
-            # ------ Phase 5: Save patient ------
-            result = await self._phase_save_patient(patient)
-            if not result:
-                return self._build_failure_output()
+            if not await self._step(
+                "fill_form", "Filling patient form",
+                self._phase_fill_required(patient),
+                f"Required fields filled for {full_name}",
+            ):
+                return await self._finish_failure()
+
+            if not await self._step(
+                "save", "Saving patient",
+                self._phase_save_patient(patient),
+                f"Patient '{full_name}' saved in TherapyNotes",
+                lambda: {
+                    "tnPatientUrl": getattr(self, "_tn_patient_url", None),
+                    "tnPatientId": getattr(self, "_tn_patient_id", None),
+                },
+            ):
+                return await self._finish_failure()
 
             # ====================================================================
             # Step 3 — extended phases 6-8 (run only after a successful save).
@@ -339,27 +409,45 @@ class TNExecutorV2:
             # _build_failure_output carries tn_patient_url/tn_patient_id.
             # ====================================================================
 
-            # ------ Phase 6: Upload intake referral PDF ------
-            result = await self._phase_upload_intake_pdf(patient)
-            if not result:
-                return self._build_failure_output()
+            if not await self._step(
+                "upload_intake_pdf", "Uploading intake referral PDF",
+                self._phase_upload_intake_pdf(patient), "Intake Referral uploaded",
+                lambda: {"documentName": "Intake Referral"},
+            ):
+                return await self._finish_failure()
 
-            # ------ Phase 7: Upload appointment-confirmation snapshot PDF ------
-            result = await self._phase_upload_snapshot_pdf(patient)
-            if not result:
-                return self._build_failure_output()
+            if not await self._step(
+                "upload_snapshot_pdf", "Uploading appointment confirmation PDF",
+                self._phase_upload_snapshot_pdf(patient),
+                "Initial Appointment Confirmation Email uploaded",
+                lambda: {"documentName": "Initial Appointment Confirmation Email"},
+            ):
+                return await self._finish_failure()
 
-            # ------ Phase 8: Schedule the initial appointment ------
-            result = await self._phase_schedule_appointment(patient)
-            if not result:
-                return self._build_failure_output()
+            if not await self._step(
+                "schedule_appointment", "Scheduling appointment",
+                self._phase_schedule_appointment(patient),
+                "Appointment scheduled in TherapyNotes",
+                lambda: {
+                    "clinician": patient.clinician_name,
+                    "appointmentDatetime": f"{patient.appointment_date} {patient.appointment_time}",
+                },
+            ):
+                return await self._finish_failure()
 
             # All phases passed
             duration_ms = self._elapsed_ms()
-            patient_name = f"{patient.first_name} {patient.last_name}"
-            logger.info(f"WORKFLOW COMPLETE: {patient_name} created in {duration_ms}ms")
+            logger.info(f"WORKFLOW COMPLETE: {full_name} created in {duration_ms}ms")
+            await self._emit(
+                "workflow_complete", "ok",
+                "Workflow complete — patient and appointment created in TherapyNotes",
+                metadata={
+                    "tnPatientUrl": getattr(self, "_tn_patient_url", None),
+                    "durationMs": duration_ms,
+                },
+            )
             return TNExecutorOutputV2.success(
-                patient_name=patient_name,
+                patient_name=full_name,
                 logs=self._logs,
                 duration_ms=duration_ms,
                 tn_patient_url=getattr(self, "_tn_patient_url", None),
@@ -375,6 +463,11 @@ class TNExecutorV2:
                 TNPhaseV2.ENTRY, "failure",
                 f"Unhandled error: {e}",
                 screenshot,
+            )
+            await self._emit(
+                "workflow_complete", "failed",
+                f"Workflow failed: {e}",
+                metadata={"failedPhase": "entry", "failureReason": "unknown_error"},
             )
             return self._build_failure_output(
                 phase_override=TNPhaseV2.ENTRY,
@@ -2179,6 +2272,82 @@ class TNExecutorV2:
 
     def _elapsed_ms(self) -> int:
         return int((time.time() - self._start_time) * 1000)
+
+    # ========================================================================
+    # Progress callbacks (CRM v128) — best-effort, never fail the workflow
+    # ========================================================================
+
+    @staticmethod
+    def _resolve_contact_id(patient) -> Optional[int]:
+        """Prefer the explicit contact_id; else parse the trailing id from the
+        callback_url path (/api/internal/tn-progress/:contactId)."""
+        cid = getattr(patient, "contact_id", None)
+        if cid is not None:
+            return cid
+        url = getattr(patient, "callback_url", None)
+        if url:
+            m = re.search(r"/(\d+)/?$", url)
+            if m:
+                return int(m.group(1))
+        return None
+
+    async def _emit(
+        self, phase: str, status: str, message: str, metadata: Optional[dict] = None
+    ) -> None:
+        """Emit one progress event for the current run. No-op if callbacks
+        aren't configured. Never raises (delegates to _emit_progress)."""
+        patient = getattr(self, "_patient", None)
+        if patient is None:
+            return
+        await _emit_progress(
+            callback_url=getattr(patient, "callback_url", None),
+            api_key=os.environ.get("TN_API_KEY", ""),
+            contact_id=self._resolve_contact_id(patient),
+            run_id=getattr(patient, "run_id", None),
+            phase=phase,
+            status=status,
+            message=message,
+            metadata=metadata,
+        )
+
+    async def _step(
+        self,
+        phase_value: str,
+        started_msg: str,
+        coro,
+        ok_msg: str,
+        ok_metadata=None,
+    ) -> bool:
+        """Run a phase coroutine with progress callbacks: started before, then
+        ok or failed after. `ok_metadata` may be a dict or a 0-arg callable
+        evaluated after success (so it can read post-phase state). Returns the
+        phase's bool result. The coroutine's own failure is already recorded in
+        _pending_failure by _fail_phase, which we relay in the 'failed' event."""
+        await self._emit(phase_value, "started", started_msg)
+        ok = await coro
+        if not ok:
+            pending = getattr(self, "_pending_failure", {})
+            await self._emit(
+                phase_value, "failed",
+                pending.get("message") or f"{phase_value} failed",
+                metadata={"phase": phase_value, "failureReason": pending.get("reason")},
+            )
+            return False
+        md = ok_metadata() if callable(ok_metadata) else ok_metadata
+        await self._emit(phase_value, "ok", ok_msg, metadata=md)
+        return True
+
+    async def _finish_failure(self) -> TNExecutorOutputV2:
+        """Build the failure output AND emit the terminal workflow_complete=failed
+        event (the CRM writes its terminal activity log entry on this)."""
+        out = self._build_failure_output()
+        failed_phase = out.failed_phase.value if out.failed_phase else "unknown"
+        await self._emit(
+            "workflow_complete", "failed",
+            f"Workflow failed at {failed_phase}: {out.error_message}",
+            metadata={"failedPhase": failed_phase, "failureReason": out.failure_reason},
+        )
+        return out
 
 
 # ============================================================================
