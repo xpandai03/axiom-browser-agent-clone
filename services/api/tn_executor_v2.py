@@ -1513,6 +1513,45 @@ class TNExecutorV2:
                     phase_start,
                 )
 
+            # TN may raise a soft warning after Save (conflict / outside the
+            # clinician's availability / patient-not-assigned) and replace the
+            # primary Save with a "Create Appointment Anyway" / "Don't Create
+            # Appointment" pair, disabling "Save New Appointment". CRM intent =
+            # force-create, so click through. (Genuine errors already failed above.)
+            anyway = page.locator("input[value='Create Appointment Anyway']").first
+            if await anyway.count() > 0 and await anyway.is_visible():
+                # Capture the warning text for diagnostics (why TN warned).
+                try:
+                    warning_text = await page.evaluate(
+                        """() => {
+                            const dialog = document.querySelector('[role="dialog"]');
+                            if (!dialog) return null;
+                            const anywayBtn = Array.from(dialog.querySelectorAll('input')).find(
+                                i => i.value === 'Create Appointment Anyway'
+                            );
+                            if (!anywayBtn) return null;
+                            let container = anywayBtn.parentElement;
+                            for (let i = 0; i < 5 && container; i++) {
+                                const text = (container.textContent || '').trim();
+                                if (text.length > 50 && text.includes('Create Appointment Anyway')) {
+                                    return text.substring(0, 500);
+                                }
+                                container = container.parentElement;
+                            }
+                            return null;
+                        }"""
+                    )
+                    if warning_text:
+                        logger.info(f"[SCHEDULE] TN warning text: {warning_text}")
+                except Exception as e:
+                    logger.warning(f"[SCHEDULE] Could not capture warning text: {e}")
+
+                logger.info("[SCHEDULE] Confirmation prompt detected — clicking 'Create Appointment Anyway'")
+                await self._safe_click(anyway, "Create Appointment Anyway")
+                await asyncio.sleep(2)
+            else:
+                logger.info("[SCHEDULE] No confirmation prompt (clean save path)")
+
             # I15: success indicator UNVERIFIED in recon. Observed signal = dialog
             # closes. Timeout bumped 12s->20s as cheap insurance against a slow
             # WebForms save. Smoke test must confirm/refine and update recon doc.
