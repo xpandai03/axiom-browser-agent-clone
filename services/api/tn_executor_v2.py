@@ -353,6 +353,10 @@ class TNExecutorV2:
         self._start_time = time.time()
         self._logs = []
         self._patient = patient  # carry callback config (run_id/callback_url/contact_id)
+        logger.info(
+            f"[CALLBACK CONFIG] callback_url={patient.callback_url}, "
+            f"run_id={patient.run_id}, contact_id={self._resolve_contact_id(patient)}"
+        )
 
         try:
             self._page = await self._runtime.ensure_browser()
