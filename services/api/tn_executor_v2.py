@@ -705,18 +705,36 @@ class TNExecutorV2:
         logger.info("=" * 70)
 
         try:
+            # Let the dashboard settle after login before grabbing sidebar links.
+            # Avoids a stale-ElementHandle race where the SPA re-renders the
+            # sidebar between resolve and click. Timeout is non-fatal.
+            try:
+                await self._page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                logger.info("[NAVIGATE] networkidle wait timed out — continuing")
+
             # Pre-clear any modal overlays that may have appeared after login
             await self._dismiss_blocking_dialogs()
 
-            # Step 1: Click "Patients" link in the sidebar
-            patients_link = await self._resolve_selector("patients_link")
-            if not patients_link:
+            # Step 1: Click "Patients" link in the sidebar.
+            # Use a Locator (auto-re-resolves on DOM re-render) instead of a
+            # cached ElementHandle, which detaches if the SPA repaints mid-click.
+            patients_loc = None
+            for sel in SELECTORS_V2["patients_link"]:
+                loc = self._page.locator(sel).first
+                try:
+                    if await loc.count() > 0:
+                        patients_loc = loc
+                        break
+                except Exception:
+                    continue
+            if patients_loc is None:
                 return await self._fail_phase(
                     phase, "navigation_failed",
                     "Patients link not found in sidebar",
                     phase_start,
                 )
-            await self._safe_click(patients_link, "Patients link")
+            await patients_loc.click(timeout=self.STEP_TIMEOUT_MS)
             logger.info("[NAVIGATE] Clicked Patients")
 
             # Step 2: Wait for the Patients page to load
@@ -1532,7 +1550,7 @@ class TNExecutorV2:
                 await dd.click()
             except Exception:
                 pass
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)  # widget reveal animation
 
         inp = await self._resolve_v2("appt_clinician_input")
         if not inp:
@@ -1541,12 +1559,31 @@ class TNExecutorV2:
                 "Clinician DynamicDropdown input not found",
                 phase_start,
             )
+        # Ensure focus lands on the inner input (not the wrapper) before typing.
         try:
             await inp.click()
+            await inp.focus()  # belt-and-suspenders
             await inp.fill("")
         except Exception:
             pass
         await inp.press_sequentially(clinician_name, delay=80)
+
+        # Confirm the characters actually landed in the input. If empty, focus
+        # didn't transfer — retry once via keyboard.type after re-focusing.
+        try:
+            typed_value = await inp.input_value()
+        except Exception:
+            typed_value = ""
+        logger.info(f"[CLINICIAN] Input value after typing '{clinician_name}': '{typed_value}'")
+        if not typed_value:
+            logger.warning("[CLINICIAN] press_sequentially did not land — retrying with keyboard.type")
+            try:
+                await inp.focus()
+                await page.keyboard.type(clinician_name, delay=80)
+                typed_value = await inp.input_value()
+            except Exception:
+                typed_value = ""
+            logger.info(f"[CLINICIAN] After fallback retry, input value: '{typed_value}'")
 
         # TN renders clinicians as 'Last, First[, Credential]', so match on name
         # tokens (order-independent) rather than the literal 'First Last' string.
