@@ -1446,11 +1446,6 @@ class TNExecutorV2:
                 )
             await asyncio.sleep(1.5)
 
-            # TEMP DIAG: dump the working patient widget for comparison vs clinician.
-            await self._diag_dump_widget(
-                "PATIENT widget (after select)", "#CalendarEntryEditor__PatientSelect"
-            )
-
             # Appointment Type = Therapy Intake (value 0) — I6
             type_sel = await self._resolve_v2("appt_type_select")
             if not type_sel:
@@ -1590,90 +1585,59 @@ class TNExecutorV2:
                 typed_value = ""
             logger.info(f"[CLINICIAN] After fallback retry, input value: '{typed_value}'")
 
-        # The value lands correctly (proven via input_value), but TN's custom
-        # DynamicDropdown incremental search does NOT fire on synthetic value
-        # changes. Cascade through event-trigger strategies until result bubbles
-        # render, escalating from cheapest (dispatch events) to heaviest (JS).
-        bubbles = await self._v2_incremental_bubble_count()
-        if bubbles == 0:
-            # Attempt 1: dispatch the input/keyup events TN's JS listener expects.
-            logger.info("[CLINICIAN] Attempt 1: dispatch input + keyup events")
+        # The clinician DynamicDropdown renders results in its OWN in-widget
+        # listbox — <a role="option"> links with the name in a
+        # .IncrementalSearchLink-FirstText span — NOT the page-wide
+        # .ContentBubble.IncrementalSearch the patient flow uses. The search
+        # fires fine on synthetic input; we were polling the wrong selector.
+        result_selector = "#CalendarEntryEditor__ClinicianSelect [role='listbox'] [role='option']"
+        tokens = set(_name_tokens(clinician_name))
+
+        async def _has_results() -> bool:
             try:
-                await inp.dispatch_event("input")
-                await inp.dispatch_event("keyup")
-            except Exception as e:
-                logger.warning(f"[CLINICIAN] Attempt 1 dispatch error: {e}")
-            await asyncio.sleep(0.6)  # let the debouncer settle
-            bubbles = await self._v2_incremental_bubble_count()
-
-        if bubbles == 0:
-            # Attempt 2: real per-character keystrokes via the keyboard. type()
-            # per char emits the discrete keydown/keypress/input/keyup sequence
-            # (handles spaces/case correctly, unlike press() of a raw char).
-            logger.info("[CLINICIAN] Attempt 1 (dispatch events) failed, trying Attempt 2: char-by-char keystrokes")
-            try:
-                await inp.click()
-                await inp.focus()
-                await inp.fill("")
-                for ch in clinician_name:
-                    await page.keyboard.type(ch)
-                    await asyncio.sleep(0.08)
-            except Exception as e:
-                logger.warning(f"[CLINICIAN] Attempt 2 keystroke error: {e}")
-            await asyncio.sleep(0.6)  # let the debouncer settle
-            bubbles = await self._v2_incremental_bubble_count()
-
-        if bubbles == 0:
-            # Attempt 3: fire the events directly via JS (heaviest hammer).
-            logger.info("[CLINICIAN] Attempt 2 (keystrokes) failed, trying Attempt 3: JS event dispatch")
-            try:
-                await inp.evaluate(
-                    """(el) => {
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-                    }"""
-                )
-            except Exception as e:
-                logger.warning(f"[CLINICIAN] Attempt 3 JS dispatch error: {e}")
-            await asyncio.sleep(0.6)  # let the debouncer settle
-            bubbles = await self._v2_incremental_bubble_count()
-
-        logger.info(f"[CLINICIAN] Bubbles present after trigger cascade: {bubbles}")
-
-        # TN renders clinicians as 'Last, First[, Credential]', so match on name
-        # tokens (order-independent) rather than the literal 'First Last' string.
-        tokens = _name_tokens(clinician_name)
-
-        # Diagnostic snapshot: let bubbles render, then log what actually appeared.
-        await asyncio.sleep(1.2)
-        await self._v2_dump_incremental_bubbles(f"after typing '{clinician_name}'")
+                return await page.locator(result_selector).count() > 0
+            except Exception:
+                return False
 
         found = await self._poll_condition(
-            condition_fn=lambda: self._v2_incremental_result_visible(
-                clinician_name, match_tokens=tokens
-            ),
+            condition_fn=_has_results,
             description=f"clinician result '{clinician_name}'",
             timeout_ms=5000,
         )
         if not found:
-            await self._v2_dump_incremental_bubbles(f"at failure for '{clinician_name}'")
-            # TEMP DIAG: dump the failing clinician widget for comparison vs patient.
-            await self._diag_dump_widget(
-                "CLINICIAN widget at failure", "#CalendarEntryEditor__ClinicianSelect"
-            )
             return await self._fail_phase(
                 phase, "clinician_selection_failed",
-                f"No clinician match for '{clinician_name}' in dropdown",
+                f"No clinician results rendered for '{clinician_name}'",
                 phase_start,
             )
-        if not await self._click_incremental_result(
-            clinician_name, "clinician", match_tokens=tokens
-        ):
+
+        # Token-match against each option's FirstText span (order-independent,
+        # tolerant of a 'Last, First' layout and credential suffixes). Click the
+        # matching <a role="option"> directly.
+        results = await page.query_selector_all(result_selector)
+        matched = None
+        rendered: List[str] = []
+        for result in results:
+            span = await result.query_selector(".IncrementalSearchLink-FirstText")
+            if span:
+                text = (await span.text_content()) or ""
+            else:
+                text = (await result.text_content()) or ""
+            rendered.append(text.strip())
+            if tokens.issubset(set(_name_tokens(text))):
+                matched = result
+                break
+
+        if matched is None:
+            logger.warning(f"[CLINICIAN] No token match for '{clinician_name}'. Rendered: {rendered}")
             return await self._fail_phase(
                 phase, "clinician_selection_failed",
-                f"Could not click clinician result '{clinician_name}'",
+                f"No clinician match for '{clinician_name}' in dropdown (rendered: {rendered})",
                 phase_start,
             )
+
+        logger.info(f"[CLINICIAN] Matched '{clinician_name}' among {rendered} — clicking")
+        await matched.click()
         await asyncio.sleep(1)
         logger.info(f"[SCHEDULE] Clinician selected: {clinician_name}")
         return True
@@ -1755,99 +1719,6 @@ class TNExecutorV2:
                 f"picking first: '{picked}' (others: {others})"
             )
         return matches[0][0]
-
-    async def _v2_dump_incremental_bubbles(self, context: str) -> None:
-        """Log the count + text of all rendered incremental-search bubbles.
-
-        Diagnostic only — settles whether bubbles render at all and in what
-        text format (e.g. 'Last, First') when a match fails.
-        """
-        texts: List[str] = []
-        for sel in SELECTORS_V2["appt_incremental_result"]:
-            try:
-                loc = self._page.locator(sel)
-                n = await loc.count()
-                if n == 0:
-                    continue
-                for i in range(n):
-                    try:
-                        texts.append((await loc.nth(i).inner_text()).strip())
-                    except Exception:
-                        continue
-                break  # report the first tier that has bubbles
-            except Exception:
-                continue
-        logger.info(f"[CLINICIAN] Rendered {len(texts)} bubbles {context}: {texts}")
-
-    async def _v2_incremental_bubble_count(self) -> int:
-        """Count currently-visible incremental-search result bubbles.
-
-        Used by the clinician trigger cascade to decide whether TN's search has
-        actually fired (returns >0) after each event-dispatch strategy.
-        """
-        for sel in SELECTORS_V2["appt_incremental_result"]:
-            try:
-                loc = self._page.locator(sel)
-                n = await loc.count()
-                if n == 0:
-                    continue
-                visible = 0
-                for i in range(n):
-                    try:
-                        if await loc.nth(i).is_visible():
-                            visible += 1
-                    except Exception:
-                        continue
-                if visible:
-                    return visible
-            except Exception:
-                continue
-        return 0
-
-    async def _diag_dump_widget(self, label: str, selector: str) -> None:
-        """TEMP diagnostic: dump the DOM structure of a dropdown widget so we can
-        compare the working patient widget vs the failing clinician widget.
-
-        Captures the element AND its parent (the patient id sits on the <input>
-        while the clinician id sits on a wrapper, so the bubble container /
-        DynamicInputTextBox may live at different levels). Pure logging — never
-        raises. Remove once the clinician interaction is solved.
-        """
-        try:
-            el = await self._page.query_selector(selector)
-            if not el:
-                logger.info(f"[DIAG] {label}: selector '{selector}' not found")
-                return
-            info = await el.evaluate(
-                """(el) => {
-                    const dumpInputs = (root) => Array.from(root.querySelectorAll('input')).map(i => ({
-                        classes: i.className,
-                        type: i.type,
-                        visible: i.offsetParent !== null,
-                        value: i.value
-                    }));
-                    const parent = el.parentElement;
-                    return {
-                        self_tag: el.tagName,
-                        self_id: el.id,
-                        self_classes: el.className,
-                        self_outerHTML: el.outerHTML.substring(0, 1500),
-                        self_inputCount: el.querySelectorAll('input').length,
-                        self_inputs: dumpInputs(el),
-                        parent_classes: parent ? parent.className : null,
-                        parent_outerHTML: parent ? parent.outerHTML.substring(0, 2000) : null,
-                        parent_inputs: parent ? dumpInputs(parent) : [],
-                        searchContainer_self: !!el.querySelector('.IncrementalSearchContainerNode'),
-                        searchContainer_parent: parent ? !!parent.querySelector('.IncrementalSearchContainerNode') : false,
-                        bubbleCount_self: el.querySelectorAll('.ContentBubble.IncrementalSearch').length,
-                        bubbleCount_parent: parent ? parent.querySelectorAll('.ContentBubble.IncrementalSearch').length : 0,
-                        reactKeys: Object.keys(el).filter(k => k.startsWith('__react') || k.startsWith('_listeners'))
-                    };
-                }"""
-            )
-            logger.info(f"[DIAG] {label}: {info}")
-        except Exception as e:
-            logger.warning(f"[DIAG] {label} dump error: {e}")
 
     async def _v2_appt_dialog_closed(self) -> bool:
         try:
