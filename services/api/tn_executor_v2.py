@@ -1446,6 +1446,11 @@ class TNExecutorV2:
                 )
             await asyncio.sleep(1.5)
 
+            # TEMP DIAG: dump the working patient widget for comparison vs clinician.
+            await self._diag_dump_widget(
+                "PATIENT widget (after select)", "#CalendarEntryEditor__PatientSelect"
+            )
+
             # Appointment Type = Therapy Intake (value 0) — I6
             type_sel = await self._resolve_v2("appt_type_select")
             if not type_sel:
@@ -1652,6 +1657,10 @@ class TNExecutorV2:
         )
         if not found:
             await self._v2_dump_incremental_bubbles(f"at failure for '{clinician_name}'")
+            # TEMP DIAG: dump the failing clinician widget for comparison vs patient.
+            await self._diag_dump_widget(
+                "CLINICIAN widget at failure", "#CalendarEntryEditor__ClinicianSelect"
+            )
             return await self._fail_phase(
                 phase, "clinician_selection_failed",
                 f"No clinician match for '{clinician_name}' in dropdown",
@@ -1794,6 +1803,51 @@ class TNExecutorV2:
             except Exception:
                 continue
         return 0
+
+    async def _diag_dump_widget(self, label: str, selector: str) -> None:
+        """TEMP diagnostic: dump the DOM structure of a dropdown widget so we can
+        compare the working patient widget vs the failing clinician widget.
+
+        Captures the element AND its parent (the patient id sits on the <input>
+        while the clinician id sits on a wrapper, so the bubble container /
+        DynamicInputTextBox may live at different levels). Pure logging — never
+        raises. Remove once the clinician interaction is solved.
+        """
+        try:
+            el = await self._page.query_selector(selector)
+            if not el:
+                logger.info(f"[DIAG] {label}: selector '{selector}' not found")
+                return
+            info = await el.evaluate(
+                """(el) => {
+                    const dumpInputs = (root) => Array.from(root.querySelectorAll('input')).map(i => ({
+                        classes: i.className,
+                        type: i.type,
+                        visible: i.offsetParent !== null,
+                        value: i.value
+                    }));
+                    const parent = el.parentElement;
+                    return {
+                        self_tag: el.tagName,
+                        self_id: el.id,
+                        self_classes: el.className,
+                        self_outerHTML: el.outerHTML.substring(0, 1500),
+                        self_inputCount: el.querySelectorAll('input').length,
+                        self_inputs: dumpInputs(el),
+                        parent_classes: parent ? parent.className : null,
+                        parent_outerHTML: parent ? parent.outerHTML.substring(0, 2000) : null,
+                        parent_inputs: parent ? dumpInputs(parent) : [],
+                        searchContainer_self: !!el.querySelector('.IncrementalSearchContainerNode'),
+                        searchContainer_parent: parent ? !!parent.querySelector('.IncrementalSearchContainerNode') : false,
+                        bubbleCount_self: el.querySelectorAll('.ContentBubble.IncrementalSearch').length,
+                        bubbleCount_parent: parent ? parent.querySelectorAll('.ContentBubble.IncrementalSearch').length : 0,
+                        reactKeys: Object.keys(el).filter(k => k.startsWith('__react') || k.startsWith('_listeners'))
+                    };
+                }"""
+            )
+            logger.info(f"[DIAG] {label}: {info}")
+        except Exception as e:
+            logger.warning(f"[DIAG] {label} dump error: {e}")
 
     async def _v2_appt_dialog_closed(self) -> bool:
         try:
