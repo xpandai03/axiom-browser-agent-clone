@@ -25,6 +25,14 @@ load_dotenv()
 from .config import get_config, log_openai_key_status
 from .routes.health import router as health_router
 
+# Configure logging at module load time so it applies under uvicorn (production),
+# not just under the __main__ guard. Without this the root logger stays at WARNING
+# and the executors' INFO breadcrumbs (PHASE / [FILL] / [SCREENSHOT]) are suppressed.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,9 +202,11 @@ if __name__ == "__main__":
 
     config = get_config()
 
+    # Module-level basicConfig already ran; force=True lets the DEBUG override apply.
     logging.basicConfig(
         level=logging.DEBUG if config.debug else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
     )
 
     uvicorn.run(
