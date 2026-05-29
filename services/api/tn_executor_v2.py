@@ -709,7 +709,7 @@ class TNExecutorV2:
             # Avoids a stale-ElementHandle race where the SPA re-renders the
             # sidebar between resolve and click. Timeout is non-fatal.
             try:
-                await self._page.wait_for_load_state("networkidle", timeout=3000)
+                await self._page.wait_for_load_state("networkidle", timeout=1500)
             except Exception:
                 logger.info("[NAVIGATE] networkidle wait timed out — continuing")
 
@@ -720,7 +720,7 @@ class TNExecutorV2:
             # Use a Locator (auto-re-resolves on DOM re-render) instead of a
             # cached ElementHandle, which detaches if the SPA repaints mid-click.
             patients_loc = None
-            for sel in SELECTORS_V2["patients_link"]:
+            for sel in SELECTORS["patients_link"]:
                 loc = self._page.locator(sel).first
                 try:
                     if await loc.count() > 0:
