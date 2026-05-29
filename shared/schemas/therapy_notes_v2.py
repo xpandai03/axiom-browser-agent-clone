@@ -31,6 +31,10 @@ class TNPhaseV2(str, Enum):
     FILL_FORM = "fill_form"
     SAVE = "save"
     INSERT_RFS = "insert_rfs"
+    # Step 3 — extended V2 workflow phases (run after SAVE)
+    UPLOAD_INTAKE_PDF = "upload_intake_pdf"
+    UPLOAD_SNAPSHOT_PDF = "upload_snapshot_pdf"
+    SCHEDULE_APPOINTMENT = "schedule_appointment"
 
 
 # ============================================================================
@@ -137,6 +141,65 @@ class TNPatientInputV2(BaseModel):
         description="SharePoint URL to the referral form submission (RFS)",
     )
 
+    # ------------------------------------------------------------------
+    # Step 3 — extended V2 fields (PDF uploads + appointment scheduling)
+    # ------------------------------------------------------------------
+    intake_pdf_url: str = Field(
+        ...,
+        description=(
+            "HTTP(S) URL to the intake/referral PDF. Uploaded to the patient "
+            "record with document name 'Intake Referral'."
+        ),
+    )
+    snapshot_pdf_url: str = Field(
+        ...,
+        description=(
+            "HTTP(S) URL to the initial appointment confirmation snapshot PDF. "
+            "Uploaded with document name 'Initial Appointment Confirmation Email'."
+        ),
+    )
+    appointment_date: str = Field(
+        ...,
+        description="Appointment date, m/d/yyyy (single-digit month/day OK, e.g. 5/28/2026)",
+        pattern=r"^\d{1,2}/\d{1,2}/\d{4}$",
+    )
+    appointment_time: str = Field(
+        ...,
+        description="Appointment start time, h:mm am/pm (e.g. 2:00 pm)",
+        pattern=r"^\d{1,2}:\d{2}\s*[AaPp][Mm]$",
+    )
+    appointment_alert_text: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Pre-formatted appointment alert text, e.g. "
+            "'New Individual In-Person Therapy CRM'. Modality (In-Person/Telehealth) "
+            "is inferred from this text: if it contains 'Telehealth', the Telehealth "
+            "checkbox is set."
+        ),
+    )
+    clinician_name: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Assigned provider's full name as it appears in TN's clinician dropdown. "
+            "Selected manually via the type-to-filter DynamicDropdown."
+        ),
+    )
+
+    @field_validator("intake_pdf_url", "snapshot_pdf_url")
+    @classmethod
+    def validate_http_url(cls, v, info):
+        """PDF source URLs must be HTTP(S) — they are fetched server-side."""
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"{info.field_name} is required")
+        v = v.strip()
+        if not (v.lower().startswith("http://") or v.lower().startswith("https://")):
+            raise ValueError(
+                f"{info.field_name} must be an http(s) URL (got: {v[:60]!r})"
+            )
+        return v
+
 
 # ============================================================================
 # Logging Schema
@@ -176,6 +239,15 @@ TNFailureReasonV2 = Literal[
     "session_expired",
     "selector_not_found",
     "unknown_error",
+    # Step 3 — extended V2 workflow failure reasons
+    "pdf_download_failed",
+    "pdf_unsupported_format",
+    "pdf_upload_ui_not_found",
+    "intake_pdf_upload_failed",
+    "snapshot_pdf_upload_failed",
+    "clinician_selection_failed",
+    "scheduling_ui_not_found",
+    "appointment_creation_failed",
 ]
 
 
@@ -261,7 +333,12 @@ class TNExecutorOutputV2(BaseModel):
         message: str,
         logs: List[TNPhaseLogV2],
         duration_ms: int,
+        tn_patient_url: Optional[str] = None,
+        tn_patient_id: Optional[str] = None,
     ) -> "TNExecutorOutputV2":
+        # Partial-success (Step 3, decision I3): when a post-save phase fails the
+        # patient already exists in TN, so the caller still needs the patient
+        # URL/ID for manual follow-up. These are populated when available.
         return cls(
             status="error",
             failed_phase=phase,
@@ -273,6 +350,8 @@ class TNExecutorOutputV2(BaseModel):
                 if log.screenshot_path is not None
             ],
             duration_ms=duration_ms,
+            tn_patient_url=tn_patient_url,
+            tn_patient_id=tn_patient_id,
         )
 
     class Config:
