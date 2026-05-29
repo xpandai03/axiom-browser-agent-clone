@@ -1491,6 +1491,16 @@ class TNExecutorV2:
             save = await self._resolve_v2("appt_save_button")
             if not save:
                 return await self._fail_phase(phase, "appointment_creation_failed", "'Save New Appointment' button not found", phase_start)
+            # TEMP DIAG: confirm Save is actually clickable. A disabled Save means a
+            # required field isn't satisfied — click anyway to surface TN's behavior.
+            try:
+                save_disabled = await save.is_disabled()
+                save_bbox = await save.bounding_box()
+                logger.info(f"[SAVE] Save button pre-click: disabled={save_disabled}, bbox={save_bbox}")
+                if save_disabled:
+                    logger.warning("[SAVE] Save button is DISABLED — form likely incomplete. Clicking anyway to observe.")
+            except Exception as e:
+                logger.warning(f"[SAVE] Pre-click state check failed: {e}")
             await self._safe_click(save, "Save New Appointment")
             await asyncio.sleep(2)
 
@@ -1515,6 +1525,57 @@ class TNExecutorV2:
             await self._debug_screenshot("schedule_appointment_complete")
 
             if not closed:
+                # TEMP DIAG: Save stays disabled with no surfaced error — capture
+                # the full form field state so we can see which required field is
+                # empty/wrong, side-by-side with what V2 intended to set.
+                logger.info(
+                    f"[DIAG] V2 EXPECTED VALUES: date='{patient.appointment_date}', "
+                    f"time='{patient.appointment_time}', "
+                    f"alert='{patient.appointment_alert_text}', "
+                    f"clinician='{patient.clinician_name}'"
+                )
+                try:
+                    field_state = await page.evaluate(
+                        """() => {
+                            const getById = (id) => {
+                                const el = document.getElementById(id);
+                                return el ? { found: true, value: el.value, disabled: el.disabled, tag: el.tagName } : { found: false };
+                            };
+                            const q = (sel) => { const el = document.querySelector(sel); return el ? el.value : 'NOT_FOUND'; };
+                            return {
+                                appointmentType: getById('CalendarEntryEditor__TypeSelect'),
+                                dateInput: q('[id*="DateInput"], [class*="DateInput"]'),
+                                timeStartInput: q('[id*="StartTime"], [id*="TimeInput"]'),
+                                timeEndInput: q('[id*="EndTime"]'),
+                                durationInput: q('[id*="Duration"]'),
+                                remindersTextArea: document.getElementById('CalendarEntryEditor__RemindersTextArea') ? document.getElementById('CalendarEntryEditor__RemindersTextArea').value : 'NOT_FOUND',
+                                allTextareas: Array.from(document.querySelectorAll('textarea')).map(t => ({
+                                    id: t.id, name: t.name, value: (t.value || '').substring(0, 200), visible: t.offsetParent !== null
+                                })),
+                                allDialogInputs: Array.from(document.querySelectorAll('[role="dialog"] input')).map(i => ({
+                                    id: i.id, name: i.name, type: i.type, value: i.value, disabled: i.disabled,
+                                    visible: i.offsetParent !== null, placeholder: i.placeholder
+                                })).filter(i => i.visible),
+                                requiredEmpty: Array.from(document.querySelectorAll('[role="dialog"] [required], [role="dialog"] [aria-required="true"]'))
+                                    .filter(el => !el.value || el.value.trim() === '')
+                                    .map(el => ({ id: el.id, name: el.name, tag: el.tagName })),
+                                saveButton: (() => {
+                                    const btn = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]'))
+                                        .find(b => (b.textContent || b.value || '').includes('Save New Appointment'));
+                                    return btn ? {
+                                        disabled: btn.disabled,
+                                        ariaDisabled: btn.getAttribute('aria-disabled'),
+                                        title: btn.title,
+                                        outerHTML: btn.outerHTML.substring(0, 500)
+                                    } : null;
+                                })()
+                            };
+                        }"""
+                    )
+                    logger.info(f"[DIAG] APPOINTMENT FORM FIELD STATE: {field_state}")
+                except Exception as e:
+                    logger.warning(f"[DIAG] Could not capture form field state: {e}")
+
                 # TEMP DIAG: the dialog-closed heuristic is unverified. Dump the
                 # dialog state so we can see whether save actually committed
                 # (dialog gone / success marker) vs. is stuck on a validation
