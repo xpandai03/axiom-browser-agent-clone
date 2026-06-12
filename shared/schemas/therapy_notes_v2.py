@@ -173,9 +173,24 @@ class TNPatientInputV2(BaseModel):
         min_length=1,
         description=(
             "Pre-formatted appointment alert text, e.g. "
-            "'New Individual In-Person Therapy CRM'. Modality (In-Person/Telehealth) "
-            "is inferred from this text: if it contains 'Telehealth', the Telehealth "
-            "checkbox is set."
+            "'New Individual In-Person Therapy CRM'. LEGACY modality fallback: "
+            "when appointment_modality is absent/None/unrecognized, modality is "
+            "inferred from this text — if it contains 'Telehealth', the Telehealth "
+            "checkbox is set (one-directional, never unchecks). When "
+            "appointment_modality is present and valid, it is authoritative and "
+            "this substring scan is NOT used."
+        ),
+    )
+    appointment_modality: Optional[Literal["Telehealth", "In Person"]] = Field(
+        None,
+        description=(
+            "Explicit, structured appointment modality. Canonical values: "
+            "'Telehealth' or 'In Person' (space, not hyphen). When present, this "
+            "deterministically drives the TN Telehealth checkbox (checked for "
+            "Telehealth, explicitly unchecked for In Person). Optional during the "
+            "CRM rollout window: when absent/None, Axiom falls back to the legacy "
+            "appointment_alert_text substring scan. Matched case-insensitively "
+            "after trimming whitespace."
         ),
     )
     clinician_name: str = Field(

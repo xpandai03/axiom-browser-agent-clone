@@ -1554,15 +1554,63 @@ class TNExecutorV2:
             await page.select_option(SELECTORS_V2["appt_type_select"][0], value="0")
             await asyncio.sleep(1.5)
 
-            # Modality inference — I8: check Telehealth iff alert text mentions it
-            if "telehealth" in patient.appointment_alert_text.lower():
-                try:
-                    cb = page.locator(SELECTORS_V2["appt_telehealth_checkbox"][0]).first
-                    if await cb.count() > 0 and not await cb.is_checked():
+            # Modality — deterministic from explicit appointment_modality when
+            # present; legacy alert-text substring scan as rollout fallback.
+            #
+            # Resolve intent:
+            #   - appointment_modality present + recognized -> authoritative
+            #     ("telehealth" -> True, "in person" -> False)
+            #   - absent/None/unrecognized -> legacy substring scan of
+            #     appointment_alert_text (preserves pre-fix behavior exactly)
+            # Then drive the checkbox deterministically: Telehealth -> ensure
+            # checked; In Person -> ensure UNCHECKED (new behavior — the old
+            # code never unchecked).
+            # `authoritative` is True only when the intent came from the explicit
+            # appointment_modality field. The new explicit-uncheck behavior is
+            # gated on it, so the legacy fallback path (field absent/unrecognized)
+            # stays strictly one-directional — byte-identical to pre-fix behavior.
+            raw_modality = patient.appointment_modality
+            norm_modality = raw_modality.strip().lower() if isinstance(raw_modality, str) else None
+            if norm_modality == "telehealth":
+                want_telehealth = True
+                authoritative = True
+                modality_source = "appointment_modality field"
+            elif norm_modality == "in person":
+                want_telehealth = False
+                authoritative = True
+                modality_source = "appointment_modality field"
+            else:
+                if raw_modality is not None and norm_modality not in ("telehealth", "in person"):
+                    # Present but unrecognized: surface the contract drift loudly,
+                    # then fall back — never silently default.
+                    logger.warning(
+                        f"[SCHEDULE] appointment_modality={raw_modality!r} not recognized "
+                        "(expected 'Telehealth' or 'In Person'); falling back to "
+                        "appointment_alert_text substring scan"
+                    )
+                want_telehealth = "telehealth" in patient.appointment_alert_text.lower()
+                authoritative = False
+                modality_source = "legacy substring scan"
+
+            logger.info(
+                f"[SCHEDULE] Modality resolved: telehealth={want_telehealth} "
+                f"(source={modality_source}, authoritative={authoritative})"
+            )
+            try:
+                cb = page.locator(SELECTORS_V2["appt_telehealth_checkbox"][0]).first
+                if await cb.count() > 0:
+                    is_checked = await cb.is_checked()
+                    if want_telehealth and not is_checked:
+                        # Check for Telehealth — same action the legacy code took.
                         await cb.check()
-                        logger.info("[SCHEDULE] Telehealth checkbox set (alert text contains 'Telehealth')")
-                except Exception as e:
-                    logger.warning(f"[SCHEDULE] Telehealth checkbox set failed: {e}")
+                        logger.info("[SCHEDULE] Telehealth checkbox checked")
+                    elif not want_telehealth and is_checked and authoritative:
+                        # Explicit uncheck — the new half of the fix. Only when the
+                        # explicit field said In Person; legacy fallback never unchecks.
+                        await cb.uncheck()
+                        logger.info("[SCHEDULE] Telehealth checkbox unchecked (In Person)")
+            except Exception as e:
+                logger.warning(f"[SCHEDULE] Telehealth checkbox set failed: {e}")
 
             # Date + time, verbatim — I9
             d = await self._resolve_v2("appt_start_date")
