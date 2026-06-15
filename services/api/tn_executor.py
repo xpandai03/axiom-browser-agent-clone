@@ -111,10 +111,20 @@ SELECTORS = {
         "nav a:has-text('Patients')",
     ],
     "patients_page_indicator": [
+        # Primary: the "+ New Patient" button is a server-rendered ASP.NET
+        # WebForms control with a stable ctl00_ ID — proven present + clickable
+        # on this exact page (the create flow clicks it in Phase 3). Far more
+        # reliable than header text: TN restyled the heading, which broke the
+        # old h1-only check and caused a 60s blind hang.
+        "input#ctl00_BodyContent_ButtonCreatePatient1",
+        # Secondary: same button matched by type+value, in case the generated
+        # ID suffix shifts but the control survives.
+        "input[type='submit'][value='+ New Patient']",
+        # Low-priority fallback: the page heading. May return if TN reverts;
+        # must NEVER be the sole load-bearing check again. The previously-dead
+        # [data-testid='patients-list'] / table / .patient-list candidates were
+        # removed — they never matched this WebForms page.
         "h1:has-text('Patients')",
-        "[data-testid='patients-list']",
-        "table",
-        ".patient-list",
     ],
     "new_patient_button": [
         "input#ctl00_BodyContent_ButtonCreatePatient1",            # Actual TN selector (verified via DOM dump)
@@ -576,12 +586,28 @@ class TNExecutor:
             await self._safe_click(patients_link, "Patients link")
             logger.info("[NAVIGATE] Clicked Patients")
 
-            # Step 2: Wait for the Patients page to load
-            patients_page = await self._resolve_selector("patients_page_indicator")
+            # Step 2: Wait for the Patients page to load.
+            # Layered, fast-failing wait (replaces the old blind 4×15s sequential
+            # selector probe that turned a missing indicator into a silent ~60s
+            # hang): (a) gate on document load, (b) short-budget probe of the
+            # stable WebForms indicators, (c) on miss, log a body snippet so the
+            # failure self-reports what TN actually rendered.
+            try:
+                await self._page.wait_for_load_state("domcontentloaded", timeout=10_000)
+            except Exception:
+                logger.info("[NAVIGATE] domcontentloaded wait timed out — probing anyway")
+
+            patients_page = await self._probe_selector("patients_page_indicator", timeout_ms=4000)
             if not patients_page:
+                snippet = await self._get_body_snippet(300)
+                logger.warning(
+                    f"[NAVIGATE] Patients page indicator not found. "
+                    f"URL={self._page.url} Body: {snippet}"
+                )
                 return await self._fail_phase(
                     phase, "navigation_failed",
-                    "Patients page did not load after clicking Patients link",
+                    f"Patients page did not load after clicking Patients link "
+                    f"(page showed: {snippet})",
                     phase_start,
                 )
             logger.info("[NAVIGATE] Patients page loaded")
