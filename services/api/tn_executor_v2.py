@@ -338,6 +338,10 @@ class TNExecutorV2:
         self._page = None
         self._logs: List[TNPhaseLogV2] = []
         self._start_time: float = 0
+        # Text of any TN overlay (e.g. account-level "Important Message"
+        # broadcast) surfaced during the run — logged AND attached to output so
+        # the message reaches staff/CRM, never silently swallowed.
+        self._surfaced_overlays: List[str] = []
 
     # ========================================================================
     # Public API
@@ -352,6 +356,7 @@ class TNExecutorV2:
         """
         self._start_time = time.time()
         self._logs = []
+        self._surfaced_overlays = []
         self._patient = patient  # carry callback config (run_id/callback_url/contact_id)
         logger.info(
             f"[CALLBACK CONFIG] callback_url={patient.callback_url}, "
@@ -922,9 +927,12 @@ class TNExecutorV2:
 
             await self._capture_screenshot("form_detection_success")
 
+            success_msg = "New Patient form loaded, first name field confirmed"
+            if self._surfaced_overlays:
+                success_msg += " | TN overlay(s) handled: " + " || ".join(self._surfaced_overlays)
             self._record_log(
                 phase, "success",
-                "New Patient form loaded, first name field confirmed",
+                success_msg,
                 phase_start=phase_start,
             )
             return True
@@ -2153,6 +2161,13 @@ class TNExecutorV2:
             except Exception:
                 continue
 
+        # NEW: bare #ElementDropbox overlay (e.g. TherapyNotes' account-level
+        # "Important Message" broadcast). It is NOT wrapped in a
+        # .Dialog/[role=dialog]/.modal element, so every selector above misses
+        # it. Surface its text, then dismiss via its own acknowledge control.
+        if await self._handle_element_dropbox_overlay():
+            return True
+
         for overlay_sel in ['.Dialog', '[role="dialog"]', '#ElementDropbox .Dialog']:
             try:
                 overlay = self._page.locator(overlay_sel).first
@@ -2170,6 +2185,118 @@ class TNExecutorV2:
                 continue
 
         return False
+
+    async def _surface_overlay_text(self, text: str) -> None:
+        """Log an overlay's text prominently and attach it to run output."""
+        text = " ".join((text or "").split())[:500] or "<empty>"
+        if text not in self._surfaced_overlays:
+            self._surfaced_overlays.append(text)
+        logger.warning(f'[OVERLAY] TN message surfaced: "{text}"')
+
+    async def _handle_element_dropbox_overlay(self) -> bool:
+        """
+        Detect a bare #ElementDropbox overlay (e.g. TherapyNotes' account-level
+        "Important Message" broadcast) that intercepts pointer events but is NOT
+        a .Dialog/[role=dialog] modal.
+
+        SAFETY: the message may carry practice/billing/compliance info staff
+        must read, so its text is SURFACED (logged + attached to run output)
+        BEFORE the overlay is touched — never silently hidden. It is then
+        dismissed via its OWN acknowledge control, scoped to #ElementDropbox
+        (not a blind global click). The overlay's raw HTML is logged once so the
+        exact acknowledge-control markup is confirmable from logs.
+
+        Returns True only if the overlay was present and is now gone.
+        """
+        try:
+            dropbox = self._page.locator("#ElementDropbox").first
+            if await dropbox.count() == 0 or not await dropbox.is_visible(timeout=500):
+                return False
+            message_text = await dropbox.inner_text(timeout=1000)
+        except Exception:
+            return False
+
+        # Ignore an empty/near-empty mount container (TN keeps #ElementDropbox in
+        # the DOM even when no message is shown). Only act on a real message, so
+        # normal no-overlay runs are unaffected (no surfacing, Escape, or delay).
+        if len(" ".join((message_text or "").split())) < 3:
+            return False
+
+        # 1) SURFACE the message text before touching the overlay.
+        await self._surface_overlay_text(message_text)
+
+        # Self-document the real DOM: log the overlay markup once so the exact
+        # acknowledge control can be confirmed from logs.
+        try:
+            outer = await dropbox.evaluate("el => el.outerHTML")
+            logger.info(f"[OVERLAY] #ElementDropbox outerHTML (first 1500): {str(outer)[:1500]}")
+        except Exception:
+            pass
+
+        # 2) Dismiss via the overlay's OWN acknowledge control, scoped to
+        #    #ElementDropbox. Ordered by most-likely TN labels; the final
+        #    scoped-button fallback stays inside the overlay (never global).
+        ack_selectors = [
+            '#ElementDropbox button:has-text("OK")',
+            '#ElementDropbox button:has-text("Okay")',
+            '#ElementDropbox button:has-text("Got it")',
+            '#ElementDropbox button:has-text("Acknowledge")',
+            '#ElementDropbox button:has-text("Continue")',
+            '#ElementDropbox button:has-text("Close")',
+            '#ElementDropbox button:has-text("Dismiss")',
+            '#ElementDropbox button:has-text("Confirm")',
+            '#ElementDropbox input[type="button"]',
+            '#ElementDropbox input[type="submit"]',
+            '#ElementDropbox a:has-text("OK")',
+            '#ElementDropbox a:has-text("Close")',
+            '#ElementDropbox [class*="close" i]',
+            '#ElementDropbox button',
+        ]
+        for sel in ack_selectors:
+            try:
+                btn = self._page.locator(sel).first
+                if await btn.count() > 0 and await btn.is_visible(timeout=500):
+                    await btn.click(timeout=2000)
+                    await asyncio.sleep(0.3)
+                    try:
+                        gone = not await dropbox.is_visible(timeout=500)
+                    except Exception:
+                        gone = True
+                    if gone:
+                        logger.info(f"[OVERLAY] Dismissed #ElementDropbox via: {sel}")
+                        return True
+            except Exception:
+                continue
+
+        # 3) Last resort: Escape.
+        try:
+            await self._page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
+            if not await dropbox.is_visible(timeout=500):
+                logger.info("[OVERLAY] Dismissed #ElementDropbox via Escape fallback")
+                return True
+        except Exception:
+            pass
+
+        logger.warning("[OVERLAY] #ElementDropbox overlay detected but could NOT be dismissed")
+        return False
+
+    async def _describe_blocking_overlay(self) -> str:
+        """
+        Best-effort: return the text of whatever overlay is currently visible and
+        likely intercepting clicks, for diagnostic reporting. Also surfaces it.
+        """
+        for sel in ['#ElementDropbox', '.Dialog', '[role="dialog"]', '.modal']:
+            try:
+                ov = self._page.locator(sel).first
+                if await ov.count() > 0 and await ov.is_visible(timeout=500):
+                    txt = " ".join((await ov.inner_text(timeout=1000)).split())[:300]
+                    if txt:
+                        await self._surface_overlay_text(txt)
+                        return txt
+            except Exception:
+                continue
+        return ""
 
     async def _safe_click(self, element_or_locator, label: str = "element") -> None:
         """
@@ -2202,7 +2329,21 @@ class TNExecutorV2:
         await self._page.keyboard.press("Escape")
         await asyncio.sleep(0.5)
         logger.info(f"[TN AGENT] Retrying click on '{label}' after Escape")
-        await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
+        try:
+            await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
+            return
+        except Exception as final_err:
+            # Generalized interception reporting: identify WHICH overlay blocked
+            # the click and surface its text, instead of an opaque Playwright
+            # timeout, so future unexpected overlays self-report.
+            overlay_text = await self._describe_blocking_overlay()
+            if overlay_text:
+                raise RuntimeError(
+                    f"Click on '{label}' blocked by an overlay that could not be "
+                    f'dismissed. Overlay said: "{overlay_text}". '
+                    f"Underlying: {str(final_err)[:200]}"
+                ) from final_err
+            raise
 
     # ========================================================================
     # Poll-based Waiting (no fixed timeouts)
@@ -2290,6 +2431,9 @@ class TNExecutorV2:
         phase_start: float,
     ) -> bool:
         """Record failure, capture screenshot, return False to halt workflow."""
+        # Attach any surfaced TN overlay text so the message reaches output.
+        if self._surfaced_overlays:
+            message = f"{message} | TN overlay(s) surfaced: " + " || ".join(self._surfaced_overlays)
         screenshot_path = await self._capture_screenshot(f"{phase.value}_failure")
         self._record_log(phase, "failure", message, screenshot_path, phase_start)
         self._pending_failure = {
