@@ -342,6 +342,10 @@ class TNExecutorV2:
         # broadcast) surfaced during the run — logged AND attached to output so
         # the message reaches staff/CRM, never silently swallowed.
         self._surfaced_overlays: List[str] = []
+        # Subset of _surfaced_overlays already relayed to the CRM, so each
+        # message rides exactly one progress callback instead of repeating on
+        # every subsequent phase.
+        self._overlays_reported: set = set()
 
     # ========================================================================
     # Public API
@@ -357,6 +361,7 @@ class TNExecutorV2:
         self._start_time = time.time()
         self._logs = []
         self._surfaced_overlays = []
+        self._overlays_reported = set()
         self._patient = patient  # carry callback config (run_id/callback_url/contact_id)
         logger.info(
             f"[CALLBACK CONFIG] callback_url={patient.callback_url}, "
@@ -2523,13 +2528,32 @@ class TNExecutorV2:
         ok = await coro
         if not ok:
             pending = getattr(self, "_pending_failure", {})
+            md_fail = {"phase": phase_value, "failureReason": pending.get("reason")}
+            if self._surfaced_overlays:
+                # _fail_phase already appended every surfaced overlay to the
+                # failure message; expose them structurally too, and mark them
+                # relayed so a later phase does not repeat them.
+                md_fail["tnOverlayMessages"] = list(self._surfaced_overlays)
+                self._overlays_reported.update(self._surfaced_overlays)
             await self._emit(
                 phase_value, "failed",
                 pending.get("message") or f"{phase_value} failed",
-                metadata={"phase": phase_value, "failureReason": pending.get("reason")},
+                metadata=md_fail,
             )
             return False
         md = ok_metadata() if callable(ok_metadata) else ok_metadata
+        # Relay any TN overlay text surfaced since the last callback. Phase 3
+        # (form detection) emits no callback of its own, so an "Important
+        # Message" dismissed there would otherwise reach the CRM only when the
+        # run FAILED — never on the success path this handling exists to create.
+        unreported = [
+            t for t in self._surfaced_overlays if t not in self._overlays_reported
+        ]
+        if unreported:
+            ok_msg = f"{ok_msg} | TN overlay(s) surfaced: " + " || ".join(unreported)
+            md = dict(md or {})
+            md["tnOverlayMessages"] = unreported
+            self._overlays_reported.update(unreported)
         await self._emit(phase_value, "ok", ok_msg, metadata=md)
         return True
 
