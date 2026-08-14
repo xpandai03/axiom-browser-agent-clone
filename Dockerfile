@@ -13,6 +13,18 @@ RUN playwright install --with-deps chromium
 # Copy application code
 COPY . .
 
+# ---- Build provenance -------------------------------------------------------
+# Stamp the image with the commit it was built from so runtime logs can state
+# with certainty which code is live. Railway supplies RAILWAY_GIT_COMMIT_SHA on
+# git-triggered builds; a CLI build can pass --build-arg GIT_COMMIT_SHA=<sha>.
+# Written AFTER `COPY . .` so the source copy cannot clobber it.
+ARG RAILWAY_GIT_COMMIT_SHA=""
+ARG GIT_COMMIT_SHA=""
+RUN printf '{"commit":"%s","built_at":"%s"}\n' \
+      "${RAILWAY_GIT_COMMIT_SHA:-${GIT_COMMIT_SHA:-unknown}}" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > /app/BUILD_INFO.json
+
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
