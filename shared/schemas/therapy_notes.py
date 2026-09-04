@@ -96,21 +96,19 @@ class TNPatientInput(BaseModel):
 
         if not v.isdigit():
             raise ValueError(
-                f"ZIP must contain only digits (got: {v!r})"
+                "ZIP must contain only digits"
             )
 
         if len(v) == 4:
-            original = v
             v = "0" + v
             logger.warning(
-                "[ZIP NORMALIZE] Padded 4-digit ZIP %r -> %r "
-                "(leading zero added; likely upstream zero-strip)",
-                original,
-                v,
+                "[ZIP NORMALIZE] Padded a 4-digit ZIP to 5 by adding a leading "
+                "zero (likely an upstream zero-strip). Value not logged — a ZIP "
+                "is one of the HIPAA Safe Harbor identifiers."
             )
         elif len(v) != 5:
             raise ValueError(
-                f"ZIP must be 5 digits (got {len(v)} digits: {v!r})"
+                f"ZIP must be 5 digits (got {len(v)} digits)"
             )
 
         return v
