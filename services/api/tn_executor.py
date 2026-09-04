@@ -840,134 +840,6 @@ class TNExecutor:
     # Phase 5: Save Patient
     # ========================================================================
 
-    # ========================================================================
-    # Save verification — did TherapyNotes actually create the record?
-    # ========================================================================
-
-    # How long to wait for TN to reach a verdict on a save before judging it.
-    SAVE_VERDICT_TIMEOUT_MS = 15000
-
-    # A TherapyNotes patient record lives at /app/patients/edit/<opaque-id>/ .
-    # The BLANK New Patient form is /app/patients/edit/ — the same path with
-    # nothing after it.
-    #
-    # This is why a substring test cannot tell them apart: ".../patients/edit" is
-    # contained in the form URL AND in every record URL, so `form_url in page.url`
-    # is true on both. The distinction is structural — is there a non-empty
-    # segment after the action? — so match on that instead.
-    _PATIENT_RECORD_URL_RE = re.compile(r"/patients/(?:edit|view|detail)/([^/?#]+)")
-
-    @classmethod
-    def _patient_record_id_from_url(cls, url: Optional[str]) -> Optional[str]:
-        """
-        Return the record segment when `url` names a SPECIFIC patient record, or
-        None for a blank form, a list page, or anything else.
-
-        Deliberately separate from the `_tn_patient_id` extraction in the save
-        phase, which matches numeric ids only and so never fires against TN's
-        opaque ones. That is a known, separately queued bug; this answers the
-        different question "is this a record URL at all?" and must not be
-        conflated with it.
-        """
-        if not url:
-            return None
-        match = cls._PATIENT_RECORD_URL_RE.search(url)
-        if not match:
-            return None
-        return match.group(1).strip() or None
-
-    # Collect visible, error-flagged text from the page.
-    #
-    # The probe this replaces named three specific classes
-    # (.validation-summary-errors, .alert-danger, [role="alert"]) and found
-    # NOTHING on a page that had just refused a save — so those are not TN's
-    # error markup. Guessing three more would fail the same way the next time TN
-    # changes its DOM, which it has done repeatedly.
-    #
-    # So: take whatever the PAGE ITSELF marks as an error — by ARIA role, by
-    # aria-invalid, or by a class/id containing an error-ish word — keep only
-    # what is actually rendered, and report the text found.
-    #
-    # Scoped to error-flagged elements on purpose. It never scrapes general page
-    # text, which on this page is a patient record.
-    _SAVE_ERROR_PROBE_JS = """
-    () => {
-      const ERRORISH = /(^|[-_ ])(error|invalid|warning|danger|required|validation)/i;
-
-      const isShown = (n) => {
-        if (typeof n.checkVisibility === "function") {
-          try {
-            if (!n.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
-          } catch (e) { /* fall through to the box check */ }
-        }
-        const r = n.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      };
-
-      const candidates = new Set();
-      document
-        .querySelectorAll('[role="alert"], [role="alertdialog"], [aria-invalid="true"], [aria-errormessage], [aria-live]')
-        .forEach((n) => candidates.add(n));
-      document.querySelectorAll('[class], [id]').forEach((n) => {
-        const key = (n.getAttribute('class') || '') + ' ' + (n.getAttribute('id') || '');
-        if (ERRORISH.test(key)) candidates.add(n);
-      });
-
-      const found = [];
-      for (const n of candidates) {
-        if (!isShown(n)) continue;
-        const t = (n.innerText || n.textContent || '').replace(/\\s+/g, ' ').trim();
-        // Skip empty nodes and whole-page containers that happen to be class-matched.
-        if (!t || t.length > 300) continue;
-        found.push(t);
-      }
-      // Drop entries wholly contained in another (a wrapper and its child).
-      const kept = found.filter((t, i) => !found.some((o, j) => j !== i && o !== t && o.includes(t)));
-      return Array.from(new Set(kept)).slice(0, 6);
-    }
-    """
-
-    # Duplicate-patient detection. This JS is UNCHANGED — lifted verbatim from
-    # the save phase into a constant so the verdict poll and the duplicate check
-    # run exactly the same test, and the poll can end early on a duplicate
-    # instead of waiting out its timeout.
-    _DUPLICATE_PROBE_JS = """
-                () => {
-                    const containers = [
-                        '.Dialog', '[role="dialog"]', '.modal',
-                        '.validation-summary-errors', '.alert-danger',
-                        '[role="alert"]', '#ElementDropbox .Dialog'
-                    ];
-                    for (const sel of containers) {
-                        const el = document.querySelector(sel);
-                        if (el && el.offsetParent !== null) {
-                            const text = el.innerText || '';
-                            if (text.includes('duplicate') || text.includes('Duplicate') || text.includes('already exists')) {
-                                return text.trim().slice(0, 200);
-                            }
-                        }
-                    }
-                    const body = document.body.innerText || '';
-                    if (body.includes('already exists') || body.includes('duplicate') || body.includes('Duplicate')) {
-                        const idx = body.indexOf('already exists');
-                        if (idx >= 0) return body.slice(Math.max(0, idx - 30), idx + 80).trim();
-                        const idx2 = body.indexOf('uplicate');
-                        if (idx2 >= 0) return body.slice(Math.max(0, idx2 - 30), idx2 + 80).trim();
-                    }
-                    return null;
-                }
-    """
-
-    async def _collect_visible_errors(self) -> List[str]:
-        """Visible error text the page is showing, best effort. Never raises."""
-        try:
-            result = await self._page.evaluate(self._SAVE_ERROR_PROBE_JS)
-            if isinstance(result, list):
-                return [str(t) for t in result if t]
-        except Exception:
-            pass
-        return []
-
     async def _phase_save_patient(self, patient: TNPatientInput) -> bool:
         """Click Save New Patient, confirm creation, detect errors/duplicates."""
         phase = TNPhase.SAVE
@@ -1000,32 +872,66 @@ class TNExecutor:
             await self._safe_click(save_loc, "Save button")
             logger.info("[SAVE] Save clicked")
 
-            # Step 3: Wait for a VERDICT, not a fixed interval.
-            #
-            # A save is slow sometimes, so sleeping 2s and then judging can call a
-            # still-in-flight save refused. Poll instead, and stop as soon as
-            # TherapyNotes has told us something either way: a record URL, an
-            # error it rendered, or a duplicate warning.
-            async def _save_verdict_reached() -> bool:
-                if self._patient_record_id_from_url(self._page.url):
-                    return True
-                if await self._page.evaluate(self._SAVE_ERROR_PROBE_JS):
-                    return True
-                return bool(await self._page.evaluate(self._DUPLICATE_PROBE_JS))
-
-            await self._poll_condition(
-                _save_verdict_reached,
-                "save verdict (record URL, error, or duplicate warning)",
-                timeout_ms=self.SAVE_VERDICT_TIMEOUT_MS,
-            )
+            # Step 3: Wait for page response
+            await page.wait_for_timeout(2000)
 
             url_after = page.url
             logger.info(f"[SAVE] URL after save: {url_after}")
 
-            # Step 4: Duplicate patient warning — unchanged detection, unchanged
-            # outcome. Checked before anything else so this existing path keeps
-            # its own failure reason rather than being folded into "save refused".
-            duplicate_text = await page.evaluate(self._DUPLICATE_PROBE_JS)
+            # Step 4: Check for validation errors
+            validation_errors = await page.evaluate("""
+                () => {
+                    const errors = [];
+                    const summary = document.querySelector('.validation-summary-errors, .alert-danger, [role="alert"]');
+                    if (summary && summary.offsetParent !== null) {
+                        errors.push(summary.innerText.trim().slice(0, 300));
+                    }
+                    const redFields = document.querySelectorAll('input.input-validation-error, .field-validation-error');
+                    if (redFields.length > 0) {
+                        errors.push(redFields.length + ' field(s) have validation errors');
+                    }
+                    return errors;
+                }
+            """)
+
+            if validation_errors:
+                for err in validation_errors:
+                    logger.warning(f"[SAVE] Validation error: {err}")
+                await self._capture_screenshot("save_validation_errors")
+                return await self._fail_phase(
+                    phase, "save_failed",
+                    f"Validation errors after save: {'; '.join(validation_errors)}",
+                    phase_start,
+                )
+
+            # Step 5: Check for duplicate patient warning
+            # Scoped to dialog/modal/alert containers first, falls back to body
+            duplicate_text = await page.evaluate("""
+                () => {
+                    const containers = [
+                        '.Dialog', '[role="dialog"]', '.modal',
+                        '.validation-summary-errors', '.alert-danger',
+                        '[role="alert"]', '#ElementDropbox .Dialog'
+                    ];
+                    for (const sel of containers) {
+                        const el = document.querySelector(sel);
+                        if (el && el.offsetParent !== null) {
+                            const text = el.innerText || '';
+                            if (text.includes('duplicate') || text.includes('Duplicate') || text.includes('already exists')) {
+                                return text.trim().slice(0, 200);
+                            }
+                        }
+                    }
+                    const body = document.body.innerText || '';
+                    if (body.includes('already exists') || body.includes('duplicate') || body.includes('Duplicate')) {
+                        const idx = body.indexOf('already exists');
+                        if (idx >= 0) return body.slice(Math.max(0, idx - 30), idx + 80).trim();
+                        const idx2 = body.indexOf('uplicate');
+                        if (idx2 >= 0) return body.slice(Math.max(0, idx2 - 30), idx2 + 80).trim();
+                    }
+                    return null;
+                }
+            """)
 
             if duplicate_text:
                 logger.warning(f"[SAVE] Duplicate detected: {duplicate_text}")
@@ -1036,75 +942,11 @@ class TNExecutor:
                     phase_start,
                 )
 
-            # Step 5: REQUIRE POSITIVE EVIDENCE that a record now exists.
-            #
-            # This phase used to assume success unless it hit an exception, one of
-            # three specific error classes, or a duplicate warning — so a save
-            # TherapyNotes simply refused was reported as "saved successfully".
-            # The run then tried to upload a document to a patient that did not
-            # exist and failed at the Documents tab, which only appears on a saved
-            # record. The two signals below were already computed here; they were
-            # logged and never read.
-            #
-            # The URL is authoritative. TherapyNotes cannot move from the blank
-            # form to /patients/edit/<id>/ without having created the record, so a
-            # record-specific URL is proof. The name check corroborates but cannot
-            # veto: innerText renders the saved record's name, and TN may render it
-            # in an order or format ("Last, First", with a middle name) that an
-            # exact match misses, so it produces false negatives.
-            record_id = self._patient_record_id_from_url(url_after)
-            expected_name = f"{patient.first_name} {patient.last_name}"
-            name_on_page = await page.evaluate(
-                "(name) => document.body.innerText.includes(name)",
-                expected_name,
-            )
-            # Boolean only — the patient's name is not written to the log.
-            logger.info(f"[SAVE] Record URL: {bool(record_id)} | name on page: {name_on_page}")
-
-            if not record_id:
-                # Disagreement case: name present, no record URL. Still a failure —
-                # without a record URL there is nothing for the upload and
-                # scheduling phases to act on, and the name can appear on a form
-                # that was never saved.
-                visible_errors = await self._collect_visible_errors()
-                detail = (
-                    f' TherapyNotes displayed: "{" | ".join(visible_errors)[:300]}".'
-                    if visible_errors
-                    else " No error text could be read from the page."
-                )
-                if name_on_page:
-                    detail += (
-                        " (The patient name IS on the page but the URL never advanced"
-                        " to a record — treating the save as refused.)"
-                    )
-                await self._capture_screenshot("save_refused")
-                return await self._fail_phase(
-                    phase, "save_failed",
-                    "TherapyNotes did not create the patient record — the save was "
-                    f"refused and the page stayed on the New Patient form.{detail}",
-                    phase_start,
-                )
-
-            # A save that landed while TN also shows an unrelated notice is a
-            # SUCCESS: the record exists. That is why error text is only consulted
-            # on the no-record branch above.
-            if not name_on_page:
-                logger.warning(
-                    "[SAVE] Record created, but the expected name was not found on "
-                    "the page — TN may render it in a different format. Proceeding "
-                    "on the record URL, which is authoritative."
-                )
-
             # Step 6: Capture patient URL and extract ID
             self._tn_patient_url = page.url
             self._tn_patient_id = None
 
             # Try to extract patient ID from URL (e.g. /app/patients/view/12345)
-            # NOTE: this numeric-only match never fires against TN's opaque ids.
-            # That is a known, separately queued bug and is deliberately left as
-            # it is here — `_patient_record_id_from_url` above answers a different
-            # question ("is this a record URL at all?") and is what the save
-            # verification and the upload navigation guard rely on.
             import re
             id_match = re.search(r'/patients/(?:view|edit|detail)/(\d+)', page.url)
             if id_match:
@@ -1117,6 +959,14 @@ class TNExecutor:
 
             logger.info(f"[SAVE] tn_patient_url: {self._tn_patient_url}")
             logger.info(f"[SAVE] tn_patient_id: {self._tn_patient_id}")
+
+            # Step 7: Confirm patient name visible
+            expected_name = f"{patient.first_name} {patient.last_name}"
+            name_on_page = await page.evaluate(
+                "(name) => document.body.innerText.includes(name)",
+                expected_name,
+            )
+            logger.info(f"[SAVE] Patient name '{expected_name}' on page: {name_on_page}")
 
             await self._capture_screenshot("save_complete")
 
