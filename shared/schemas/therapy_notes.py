@@ -162,6 +162,10 @@ TNFailureReason = Literal[
     "mfa_required",
     "navigation_failed",
     "new_patient_form_not_found",
+    # The page and its form were fine — an overlay covered the control the
+    # agent needed to click. Distinct from "not found" so a TherapyNotes
+    # broadcast is never again reported as a missing form.
+    "blocked_by_overlay",
     "form_field_not_found",
     "zip_autocomplete_failed",
     "save_failed",
