@@ -312,6 +312,19 @@ SCREENSHOT_DIR = os.environ.get(
 # TNExecutorV2
 # ============================================================================
 
+
+class OverlayBlockedError(RuntimeError):
+    """
+    A click could not land because an overlay covered the target.
+
+    Distinct from a generic failure so the phase handler can report
+    "blocked_by_overlay" instead of blaming the element it was trying to reach.
+    On 4 Sept this surfaced as "new_patient_form_not_found" on a page whose form
+    was present and whose button Playwright itself called "visible, enabled and
+    stable" — the button was simply covered.
+    """
+
+
 class TNExecutorV2:
     """
     Deterministic, linear executor for TherapyNotes patient creation.
@@ -569,7 +582,7 @@ class TNExecutorV2:
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "unknown_error", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "unknown_error"), str(e), phase_start)
 
     async def _check_practice_code_visible(self) -> bool:
         """Poll helper: check if any practice code input is visible."""
@@ -733,7 +746,7 @@ class TNExecutorV2:
             )
 
         except Exception as e:
-            return await self._fail_phase(phase, "login_failed", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "login_failed"), str(e), phase_start)
 
     async def _detect_post_login_interstitial(self):
         """
@@ -871,7 +884,7 @@ class TNExecutorV2:
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "navigation_failed", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "navigation_failed"), str(e), phase_start)
 
     # ========================================================================
     # Phase 3 (detection): Confirm New Patient form fields exist
@@ -943,7 +956,7 @@ class TNExecutorV2:
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "new_patient_form_not_found", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "new_patient_form_not_found"), str(e), phase_start)
 
     # ========================================================================
     # Phase 4: Fill Required Fields (does NOT save)
@@ -1085,7 +1098,7 @@ class TNExecutorV2:
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "form_field_not_found", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "form_field_not_found"), str(e), phase_start)
 
     async def _check_locator_has_value(self, locator) -> bool:
         """Poll helper: check if a locator's input has a non-empty value."""
@@ -1238,7 +1251,7 @@ class TNExecutorV2:
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "save_failed", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "save_failed"), str(e), phase_start)
 
     # ========================================================================
     # Step 3 — Phase 6/7: PDF upload (intake + snapshot)
@@ -1295,7 +1308,7 @@ class TNExecutorV2:
             try:
                 pdf_path = await self._download_pdf_to_tempfile(url)
             except PdfFormatError as e:
-                return await self._fail_phase(phase, "pdf_unsupported_format", str(e), phase_start)
+                return await self._fail_phase(phase, self._reason_for(e, "pdf_unsupported_format"), str(e), phase_start)
             except Exception as e:
                 return await self._fail_phase(
                     phase, "pdf_download_failed",
@@ -1825,7 +1838,7 @@ class TNExecutorV2:
             return True
 
         except Exception as e:
-            return await self._fail_phase(phase, "appointment_creation_failed", str(e), phase_start)
+            return await self._fail_phase(phase, self._reason_for(e, "appointment_creation_failed"), str(e), phase_start)
 
     async def _select_clinician(
         self, clinician_name: str, phase: TNPhaseV2, phase_start: float
@@ -2158,11 +2171,30 @@ class TNExecutorV2:
         for selector in dialog_close_selectors:
             try:
                 btn = self._page.locator(selector).first
-                if await btn.count() > 0 and await btn.is_visible(timeout=500):
-                    await btn.click(timeout=2000)
-                    logger.info(f"[TN AGENT] Dialog dismissed via: {selector}")
-                    await asyncio.sleep(0.3)
-                    return True
+                if not (await btn.count() > 0 and await btn.is_visible(timeout=500)):
+                    continue
+                # The list above includes unlabelled catch-alls ("Yes", "No" and
+                # '#ElementDropbox .Dialog button', which matches ANY button in the
+                # dialog). Check what the control actually says before pressing it:
+                # this sweep must never answer a duplicate-patient warning or the
+                # "Create Appointment Anyway" confirmation the agent accepts
+                # deliberately elsewhere in the flow.
+                label = await btn.evaluate(
+                    "el => (el.innerText || el.value || el.getAttribute('aria-label') "
+                    "|| el.getAttribute('title') || '').trim()"
+                )
+                blocked_by = self._label_is_consequential(label)
+                if blocked_by:
+                    logger.info(
+                        f"[TN AGENT] Not pressing '{self._normalize_label(label)[:40]}' "
+                        f"via {selector} — label implies a consequential choice "
+                        f"('{blocked_by}')"
+                    )
+                    continue
+                await btn.click(timeout=2000)
+                logger.info(f"[TN AGENT] Dialog dismissed via: {selector}")
+                await asyncio.sleep(0.3)
+                return True
             except Exception:
                 continue
 
@@ -2198,119 +2230,452 @@ class TNExecutorV2:
             self._surfaced_overlays.append(text)
         logger.warning(f'[OVERLAY] TN message surfaced: "{text}"')
 
-    async def _handle_element_dropbox_overlay(self) -> bool:
-        """
-        Detect a bare #ElementDropbox overlay (e.g. TherapyNotes' account-level
-        "Important Message" broadcast) that intercepts pointer events but is NOT
-        a .Dialog/[role=dialog] modal.
+    # ========================================================================
+    # Blocking-overlay detection — markup-agnostic
+    # ========================================================================
+    #
+    # WHY THIS DOES NOT ASK "is the container visible?"
+    #
+    # On 4 Sept a TherapyNotes account-level broadcast covered the Patients page.
+    # Playwright's hit-test named the blocker explicitly —
+    #   <h2>Important Message</h2> from <div id="ElementDropbox">…</div> subtree
+    #   intercepts pointer events
+    # — while locator("#ElementDropbox").is_visible() returned False. Every guard
+    # here was keyed to the CONTAINER's own visibility, so all of them bailed: the
+    # overlay was never surfaced, never dismissed, and the run failed reporting
+    # "new_patient_form_not_found" on a page whose form was perfectly fine.
+    #
+    # The overlay has since been cleared by hand and cannot be re-observed, so the
+    # exact reason the container reported not-visible (zero-size portal, opacity,
+    # offscreen, clipped, ...) is not known. Nothing below depends on knowing it.
+    # The question asked is only ever "is something inside here actually painting
+    # over the page?", which holds for every one of those causes.
 
-        SAFETY: the message may carry practice/billing/compliance info staff
-        must read, so its text is SURFACED (logged + attached to run output)
-        BEFORE the overlay is touched — never silently hidden. It is then
-        dismissed via its OWN acknowledge control, scoped to #ElementDropbox
-        (not a blind global click). The overlay's raw HTML is logged once so the
-        exact acknowledge-control markup is confirmable from logs.
+    # Does this element's SUBTREE paint anything on screen? Answers for the whole
+    # subtree, not the element, and uses the browser's own visibility verdict
+    # (checkVisibility covers display, visibility, opacity and content-visibility
+    # INCLUDING inherited/ancestor effects) combined with a real viewport-
+    # intersecting box.
+    _PAINT_PROBE_JS = """
+    (el) => {
+      const EMPTY = { paints: false, text: "", area: 0 };
+      if (!el || !el.isConnected) return EMPTY;
+      const vw = window.innerWidth, vh = window.innerHeight;
 
-        Returns True only if the overlay was present and is now gone.
+      const effectivelyVisible = (n) => {
+        if (typeof n.checkVisibility === "function") {
+          try {
+            return n.checkVisibility({
+              opacityProperty: true,
+              visibilityProperty: true,
+              contentVisibilityAuto: true,
+            });
+          } catch (e) { /* fall through to the manual walk */ }
+        }
+        // Fallback for engines without checkVisibility: walk the ancestor chain,
+        // because display/visibility/opacity all inherit their effect downwards.
+        for (let a = n; a && a.nodeType === 1; a = a.parentElement) {
+          const s = window.getComputedStyle(a);
+          if (s.display === "none") return false;
+          if (s.visibility === "hidden" || s.visibility === "collapse") return false;
+          if (parseFloat(s.opacity || "1") === 0) return false;
+        }
+        return true;
+      };
+
+      let area = 0;
+      const nodes = [el, ...el.querySelectorAll("*")];
+      for (const n of nodes) {
+        if (!effectivelyVisible(n)) continue;
+        const r = n.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const w = Math.min(r.right, vw) - Math.max(r.left, 0);
+        const h = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+        if (w > 0 && h > 0) area = Math.max(area, w * h);
+      }
+      return {
+        paints: area > 0,
+        text: (el.innerText || el.textContent || "").trim(),
+        area: area,
+      };
+    }
+    """
+
+    # Given a target element, return whatever is actually on top of its click
+    # point — the same point Playwright aims at — or null when the target is
+    # clear. Structure- and name-agnostic: it asks the DOM what is there.
+    _FIND_BLOCKER_JS = """
+    (target) => {
+      if (!target || !target.isConnected) return null;
+      const r = target.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
+
+      const hit = document.elementFromPoint(x, y);
+      if (!hit) return null;
+      // Target itself, or its own descendant/ancestor chain — not an overlay.
+      if (hit === target || target.contains(hit) || hit.contains(target)) return null;
+
+      // Something unrelated is on top. Walk up from it to the OUTERMOST ancestor
+      // that still does not contain the target: that is the overlay's own root,
+      // rather than a page wrapper shared with the target.
+      let node = hit;
+      while (
+        node.parentElement &&
+        node.parentElement !== document.body &&
+        node.parentElement !== document.documentElement &&
+        !node.parentElement.contains(target)
+      ) {
+        node = node.parentElement;
+      }
+      return node;
+    }
+    """
+
+    # A control whose label implies a CHOICE with consequences, not an
+    # acknowledgement. Never auto-clicked. Word-boundary matched, so "Notice"
+    # does not trip "no" and "Save Draft" does trip "save".
+    #
+    # This list is what keeps the generic guard from doing damage: the flow
+    # depends on two dialogs it must NOT auto-answer — the duplicate-patient
+    # warning, and the "Create Appointment Anyway" confirmation the agent accepts
+    # deliberately elsewhere.
+    CONSEQUENTIAL_LABEL_TOKENS = (
+        "anyway", "confirm", "yes", "no", "delete", "remove", "discard",
+        "overwrite", "merge", "duplicate", "cancel", "submit", "save",
+        "create", "schedule", "send", "sign", "agree", "accept", "decline",
+        "reject", "archive", "pay", "proceed", "override", "replace", "update",
+    )
+
+    # A control that only says "I have read this".
+    ACK_LABEL_TOKENS = (
+        "ok", "okay", "got it", "acknowledge", "acknowledged", "close",
+        "dismiss", "continue", "understood", "i understand", "done", "next",
+    )
+
+    # An overlay whose text reads like a DECISION rather than an announcement.
+    # Two consequences: the agent refuses to auto-dismiss it, and it does not
+    # copy the text into logs or run output — a decision dialog is the kind that
+    # names a specific patient, whereas an account-level broadcast does not.
+    CONSEQUENTIAL_OVERLAY_TOKENS = (
+        "already exists", "duplicate", "are you sure", "cannot be undone",
+        "will be deleted", "will be removed", "permanently", "unsaved changes",
+        "do you want to", "overwrite", "existing patient", "potential match",
+    )
+
+    @staticmethod
+    def _normalize_label(text: Optional[str]) -> str:
+        return " ".join((text or "").split()).strip().lower()
+
+    @classmethod
+    def _label_is_consequential(cls, label: Optional[str]) -> Optional[str]:
+        """Return the token that makes this label consequential, else None."""
+        norm = cls._normalize_label(label)
+        if not norm:
+            return None
+        for token in cls.CONSEQUENTIAL_LABEL_TOKENS:
+            if re.search(rf"\b{re.escape(token)}\b", norm):
+                return token
+        return None
+
+    @classmethod
+    def _label_is_acknowledgement(cls, label: Optional[str]) -> bool:
+        """True for a short label that reads purely as 'I have read this'."""
+        norm = cls._normalize_label(label)
+        if not norm or len(norm) > 40:
+            return False
+        if cls._label_is_consequential(norm):
+            return False
+        return any(re.search(rf"\b{re.escape(t)}\b", norm) for t in cls.ACK_LABEL_TOKENS)
+
+    @classmethod
+    def _overlay_is_decision_dialog(cls, text: Optional[str]) -> Optional[str]:
+        """Return the token marking this overlay a decision dialog, else None."""
+        norm = cls._normalize_label(text)
+        for token in cls.CONSEQUENTIAL_OVERLAY_TOKENS:
+            if token in norm:
+                return token
+        return None
+
+    @staticmethod
+    def _selector_from_interception_error(err_str: str) -> Optional[str]:
         """
+        Pull the blocking element out of Playwright's own error text.
+
+        Playwright already names it:
+          "<h2>Important Message</h2> from <div id="ElementDropbox">…</div>
+           subtree intercepts pointer events"
+        so even when hit-testing and the paint probe both miss, the blocker is
+        addressable. Prefers an id, falls back to the first class.
+        """
+        if "intercepts pointer events" not in err_str:
+            return None
+        m = re.search(r"from <(\w+)([^>]*)>", err_str)
+        if not m:
+            # Some builds report only the intercepting element itself.
+            m = re.search(r"<(\w+)([^>]*)>\s*(?:from\s*)?subtree intercepts", err_str)
+            if not m:
+                return None
+        tag, attrs = m.group(1), m.group(2) or ""
+        id_m = re.search(r'id="([^"]+)"', attrs)
+        if id_m:
+            return f"#{id_m.group(1)}"
+        cls_m = re.search(r'class="([^"]+)"', attrs)
+        if cls_m:
+            first = cls_m.group(1).split()[0] if cls_m.group(1).split() else ""
+            if first:
+                return f"{tag}.{first}"
+        return None
+
+    async def _probe_paint(self, handle) -> dict:
+        """Run the paint probe against an ElementHandle. Never raises."""
         try:
-            dropbox = self._page.locator("#ElementDropbox").first
-            if await dropbox.count() == 0 or not await dropbox.is_visible(timeout=500):
-                return False
-            message_text = await dropbox.inner_text(timeout=1000)
+            result = await handle.evaluate(self._PAINT_PROBE_JS)
+            if isinstance(result, dict):
+                return result
         except Exception:
-            return False
+            pass
+        return {"paints": False, "text": "", "area": 0}
 
-        # Ignore an empty/near-empty mount container (TN keeps #ElementDropbox in
-        # the DOM even when no message is shown). Only act on a real message, so
-        # normal no-overlay runs are unaffected (no surfacing, Escape, or delay).
-        if len(" ".join((message_text or "").split())) < 3:
-            return False
-
-        # 1) SURFACE the message text before touching the overlay.
-        await self._surface_overlay_text(message_text)
-
-        # Self-document the real DOM: log the overlay markup once so the exact
-        # acknowledge control can be confirmed from logs.
+    async def _element_handle_for(self, target):
+        """Accept a Locator or an ElementHandle, return an ElementHandle."""
         try:
-            outer = await dropbox.evaluate("el => el.outerHTML")
-            logger.info(f"[OVERLAY] #ElementDropbox outerHTML (first 1500): {str(outer)[:1500]}")
+            if hasattr(target, "element_handle"):  # Locator
+                return await target.element_handle(timeout=2000)
+            return target  # already an ElementHandle
+        except Exception:
+            return None
+
+    async def _find_blocking_overlay(self, target):
+        """
+        Return an ElementHandle for whatever covers `target`'s click point, or
+        None. Independent of markup, ids, classes and text.
+        """
+        try:
+            el = await self._element_handle_for(target)
+            if el is None:
+                return None
+            js_handle = await self._page.evaluate_handle(self._FIND_BLOCKER_JS, el)
+            return js_handle.as_element()
+        except Exception:
+            return None
+
+    async def _try_dismiss_overlay_handle(
+        self, blocker, origin: str, confirmed_blocking: bool = False
+    ) -> bool:
+        """
+        Surface a blocking overlay's message, then dismiss it using a control
+        INSIDE ITS OWN SUBTREE. Returns True only if it is now gone.
+
+        Discipline (unchanged from the previous, narrower handler):
+          - the message is surfaced BEFORE the overlay is touched, so a broadcast
+            carrying practice/billing/compliance information is never silently
+            swallowed;
+          - only controls within the blocker's subtree are considered — never a
+            global click;
+          - a control whose label implies a consequential choice is never clicked;
+          - an overlay that reads as a DECISION rather than an announcement is
+            not dismissed at all, and its text is not copied anywhere.
+        """
+        if blocker is None:
+            return False
+
+        probe = await self._probe_paint(blocker)
+        text = " ".join((probe.get("text") or "").split())
+
+        # `confirmed_blocking` means something already PROVED this element is in
+        # the way — a hit-test on the click point, or Playwright naming it in an
+        # interception error. Such an element must be dealt with whether or not it
+        # paints: an overlay at opacity 0, or one drawn entirely off-viewport with
+        # a transparent hit area, still swallows the click.
+        #
+        # Without that proof this is a speculative probe of a known selector, and
+        # the paint/text gates matter: TherapyNotes keeps #ElementDropbox mounted
+        # with no message in it, and a normal run must not surface, Escape or
+        # stall on an empty container.
+        if not confirmed_blocking:
+            if not probe.get("paints"):
+                return False
+            if len(text) < 3:
+                return False
+
+        # A decision dialog is the agent's business to fail on, not to answer —
+        # and it is the kind that names a patient, so its text stays out of logs.
+        decision_token = self._overlay_is_decision_dialog(text)
+        if decision_token:
+            logger.warning(
+                f"[OVERLAY] Blocker at {origin} reads as a decision dialog "
+                f"(matched '{decision_token}') — refusing to auto-dismiss. "
+                f"Text withheld: a decision dialog can name a patient."
+            )
+            return False
+
+        if text:
+            await self._surface_overlay_text(text)
+
+        # Self-document the real DOM once, so the acknowledge control is
+        # confirmable from logs next time. Announcement text only (a decision
+        # dialog returned above), so no patient data reaches this line.
+        try:
+            outer = await blocker.evaluate("el => el.outerHTML")
+            logger.info(f"[OVERLAY] Blocker outerHTML at {origin} (first 1500): {str(outer)[:1500]}")
         except Exception:
             pass
 
-        # 2) Dismiss via the overlay's OWN acknowledge control, scoped to
-        #    #ElementDropbox. Ordered by most-likely TN labels; the final
-        #    scoped-button fallback stays inside the overlay (never global).
-        ack_selectors = [
-            '#ElementDropbox button:has-text("OK")',
-            '#ElementDropbox button:has-text("Okay")',
-            '#ElementDropbox button:has-text("Got it")',
-            '#ElementDropbox button:has-text("Acknowledge")',
-            '#ElementDropbox button:has-text("Continue")',
-            '#ElementDropbox button:has-text("Close")',
-            '#ElementDropbox button:has-text("Dismiss")',
-            '#ElementDropbox button:has-text("Confirm")',
-            '#ElementDropbox input[type="button"]',
-            '#ElementDropbox input[type="submit"]',
-            '#ElementDropbox a:has-text("OK")',
-            '#ElementDropbox a:has-text("Close")',
-            '#ElementDropbox [class*="close" i]',
-            '#ElementDropbox button',
-        ]
-        for sel in ack_selectors:
+        # Candidate acknowledge controls, scoped to the blocker's own subtree.
+        try:
+            controls = await blocker.query_selector_all(
+                'button, input[type="button"], input[type="submit"], a, '
+                '[role="button"], [class*="close" i], [aria-label]'
+            )
+        except Exception:
+            controls = []
+
+        for control in controls:
             try:
-                btn = self._page.locator(sel).first
-                if await btn.count() > 0 and await btn.is_visible(timeout=500):
-                    await btn.click(timeout=2000)
-                    await asyncio.sleep(0.3)
-                    try:
-                        gone = not await dropbox.is_visible(timeout=500)
-                    except Exception:
-                        gone = True
-                    if gone:
-                        logger.info(f"[OVERLAY] Dismissed #ElementDropbox via: {sel}")
-                        return True
+                label = await control.evaluate(
+                    "el => (el.innerText || el.value || el.getAttribute('aria-label') "
+                    "|| el.getAttribute('title') || '').trim()"
+                )
+                blocked_by = self._label_is_consequential(label)
+                if blocked_by:
+                    logger.info(
+                        f"[OVERLAY] Skipping control '{self._normalize_label(label)[:40]}' "
+                        f"— label implies a consequential choice ('{blocked_by}')"
+                    )
+                    continue
+                # An unlabelled control is only acceptable if it looks like a
+                # close affordance; otherwise we do not know what it does.
+                if not self._label_is_acknowledgement(label):
+                    klass = await control.evaluate("el => el.className || ''")
+                    if "close" not in str(klass).lower():
+                        continue
+
+                if not confirmed_blocking and not (await self._probe_paint(control)).get("paints"):
+                    continue
+
+                await control.click(timeout=2000)
+                await asyncio.sleep(0.3)
+                if not (await self._probe_paint(blocker)).get("paints"):
+                    logger.info(
+                        f"[OVERLAY] Dismissed blocker at {origin} via control "
+                        f"'{self._normalize_label(label)[:40] or '<close>'}'"
+                    )
+                    return True
             except Exception:
                 continue
 
-        # 3) Last resort: Escape.
+        # Last resort: Escape.
         try:
             await self._page.keyboard.press("Escape")
             await asyncio.sleep(0.3)
-            if not await dropbox.is_visible(timeout=500):
-                logger.info("[OVERLAY] Dismissed #ElementDropbox via Escape fallback")
+            if not (await self._probe_paint(blocker)).get("paints"):
+                logger.info(f"[OVERLAY] Dismissed blocker at {origin} via Escape fallback")
                 return True
         except Exception:
             pass
 
-        logger.warning("[OVERLAY] #ElementDropbox overlay detected but could NOT be dismissed")
+        logger.warning(f"[OVERLAY] Blocker at {origin} detected but could NOT be dismissed")
         return False
 
-    async def _describe_blocking_overlay(self) -> str:
+    async def _clear_overlay_blocking(self, target, label: str) -> bool:
+        """1b: hit-test `target`'s click point and clear whatever covers it."""
+        blocker = await self._find_blocking_overlay(target)
+        if blocker is None:
+            return False
+        logger.info(f"[OVERLAY] Hit-test: something covers '{label}' — inspecting it")
+        return await self._try_dismiss_overlay_handle(
+            blocker, f"hit-test on '{label}'", confirmed_blocking=True
+        )
+
+    async def _clear_overlay_from_error(self, err_str: str) -> bool:
+        """1c: dismiss the element Playwright itself named in the error."""
+        selector = self._selector_from_interception_error(err_str)
+        if not selector:
+            return False
+        logger.info(f"[OVERLAY] Playwright named the blocker: {selector}")
+        try:
+            handle = await self._page.query_selector(selector)
+        except Exception:
+            return False
+        return await self._try_dismiss_overlay_handle(
+            handle, f"error-named {selector}", confirmed_blocking=True
+        )
+
+    async def _handle_element_dropbox_overlay(self) -> bool:
         """
-        Best-effort: return the text of whatever overlay is currently visible and
-        likely intercepting clicks, for diagnostic reporting. Also surfaces it.
+        The known TherapyNotes account-level broadcast mount point.
+
+        Kept as a named fast path, but the visibility guard that made it inert is
+        gone: presence in the DOM is decided by query_selector and everything
+        after that is decided by the paint probe, so it now fires whether or not
+        the container itself reports visible.
         """
+        try:
+            dropbox = await self._page.query_selector("#ElementDropbox")
+        except Exception:
+            return False
+        if dropbox is None:
+            return False
+        return await self._try_dismiss_overlay_handle(dropbox, "#ElementDropbox")
+
+    async def _describe_blocking_overlay(self, target=None) -> str:
+        """
+        Best-effort: describe whatever is currently covering the page (or
+        `target`, when given) for diagnostic reporting. Also surfaces it.
+
+        Hit-testing comes first because it needs no prior knowledge of the
+        overlay; the named selectors are only a fallback.
+        """
+        candidates = []
+        if target is not None:
+            blocker = await self._find_blocking_overlay(target)
+            if blocker is not None:
+                candidates.append(blocker)
         for sel in ['#ElementDropbox', '.Dialog', '[role="dialog"]', '.modal']:
             try:
-                ov = self._page.locator(sel).first
-                if await ov.count() > 0 and await ov.is_visible(timeout=500):
-                    txt = " ".join((await ov.inner_text(timeout=1000)).split())[:300]
-                    if txt:
-                        await self._surface_overlay_text(txt)
-                        return txt
+                handle = await self._page.query_selector(sel)
+                if handle is not None:
+                    candidates.append(handle)
             except Exception:
                 continue
+
+        for handle in candidates:
+            probe = await self._probe_paint(handle)
+            if not probe.get("paints"):
+                continue
+            txt = " ".join((probe.get("text") or "").split())[:300]
+            if not txt:
+                continue
+            if self._overlay_is_decision_dialog(txt):
+                # Do not copy a decision dialog's text: it can name a patient.
+                return "a confirmation dialog requiring a decision (text withheld)"
+            await self._surface_overlay_text(txt)
+            return txt
         return ""
 
     async def _safe_click(self, element_or_locator, label: str = "element") -> None:
         """
-        Click with automatic dialog dismissal on interception failure.
+        Click, clearing any overlay that covers the target.
 
-        Attempts a normal click first. If the click fails because a TN modal
-        overlay intercepts pointer events, dismisses the dialog and retries.
-        Falls back to Escape key if button-based dismissal doesn't work.
+        Order of attack, cheapest and most general first:
+          1. Hit-test the click point BEFORE clicking. Catches a blocker without
+             burning a 15s Playwright timeout, and needs no knowledge of it.
+          2. On failure, the known dialog/broadcast selectors.
+          3. The element Playwright itself named in the interception error.
+          4. Hit-test again (the page may have re-rendered).
+          5. Escape.
+        If it is still blocked, raise an error that says SO — naming the overlay
+        rather than reporting an opaque timeout on an element that was, per
+        Playwright's own log, "visible, enabled and stable" the whole time.
         """
+        # 1) Pre-flight: is anything already on top of the click point?
+        try:
+            await self._clear_overlay_blocking(element_or_locator, label)
+        except Exception:
+            pass
+
         try:
             await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
             return
@@ -2322,7 +2687,12 @@ class TNExecutorV2:
             logger.warning(f"[TN AGENT] Click blocked on '{label}': {err_str[:200]}")
             logger.info("[TN AGENT] Attempting to dismiss blocking dialog...")
 
+        # 2) Known dialogs, then 3) the blocker Playwright named, then 4) hit-test.
         dismissed = await self._dismiss_blocking_dialogs()
+        if not dismissed:
+            dismissed = await self._clear_overlay_from_error(err_str)
+        if not dismissed:
+            dismissed = await self._clear_overlay_blocking(element_or_locator, label)
         if dismissed:
             logger.info(f"[TN AGENT] Retrying click on '{label}' after dialog dismissal")
         try:
@@ -2331,6 +2701,7 @@ class TNExecutorV2:
         except Exception as second_err:
             logger.warning(f"[TN AGENT] Retry 1 failed on '{label}': {str(second_err)[:200]}")
 
+        # 5) Escape.
         await self._page.keyboard.press("Escape")
         await asyncio.sleep(0.5)
         logger.info(f"[TN AGENT] Retrying click on '{label}' after Escape")
@@ -2338,12 +2709,14 @@ class TNExecutorV2:
             await element_or_locator.click(timeout=self.STEP_TIMEOUT_MS)
             return
         except Exception as final_err:
-            # Generalized interception reporting: identify WHICH overlay blocked
-            # the click and surface its text, instead of an opaque Playwright
-            # timeout, so future unexpected overlays self-report.
-            overlay_text = await self._describe_blocking_overlay()
+            # Say what actually blocked it. `_describe_blocking_overlay` is given
+            # the target so it can hit-test rather than guess from a selector
+            # list, and it no longer depends on the container reporting visible —
+            # which is why this branch produced nothing on 4 Sept and the run
+            # surfaced a bare timeout instead.
+            overlay_text = await self._describe_blocking_overlay(element_or_locator)
             if overlay_text:
-                raise RuntimeError(
+                raise OverlayBlockedError(
                     f"Click on '{label}' blocked by an overlay that could not be "
                     f'dismissed. Overlay said: "{overlay_text}". '
                     f"Underlying: {str(final_err)[:200]}"
@@ -2427,6 +2800,16 @@ class TNExecutorV2:
         self._logs.append(log_entry)
         log_prefix = "OK" if status == "success" else "FAIL"
         logger.info(f"[{log_prefix}] {phase.value}: {message} ({duration_ms}ms)")
+
+    @staticmethod
+    def _reason_for(exc: Exception, default: str) -> str:
+        """
+        Classify a phase failure. An overlay block is reported as exactly that,
+        never as whatever the phase happened to be looking for — the 4 Sept runs
+        blamed a missing New Patient form for a TherapyNotes broadcast sitting on
+        top of a button that was present the whole time.
+        """
+        return "blocked_by_overlay" if isinstance(exc, OverlayBlockedError) else default
 
     async def _fail_phase(
         self,
