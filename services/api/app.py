@@ -94,22 +94,48 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Validation error handler — exposes field-level details for TN debugging
+    def _safe_validation_errors(exc: RequestValidationError):
+        """
+        Reduce a validation failure to the parts that make it diagnosable —
+        WHICH field and WHAT constraint — and nothing else.
+
+        Pydantic puts the REJECTED VALUE in `input` on every error, and `ctx` can
+        carry values too. Both are dropped here. Only `loc` (the field path),
+        `msg` (the constraint, e.g. "Input should be 'Male' or 'Female'") and
+        `type` survive, so a request body of patient data cannot reach a log line
+        or the response.
+        """
+        safe = []
+        for err in exc.errors():
+            loc = err.get("loc") or ()
+            safe.append({
+                "loc": [str(part) for part in loc],
+                "field": ".".join(str(part) for part in loc),
+                "msg": str(err.get("msg", "")),
+                "type": str(err.get("type", "")),
+            })
+        return safe
+
+    # Validation error handler — reports WHICH field failed and WHY, never the
+    # value it failed on. This previously logged the entire request body and
+    # echoed it back in the response as `body_received`; for the TN routes that
+    # body is patient data (name, DOB, address, email, phone), so it was written
+    # to the platform logs on every 422 and returned over the wire as well.
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        body = await request.body()
-        logger.warning(f"[TN DEBUG] Validation error body: {body}")
-        logger.warning(f"[TN DEBUG] Validation errors: {exc.errors()}")
+        safe_errors = _safe_validation_errors(exc)
+        summary = "; ".join(f"{e['field']}: {e['msg']}" for e in safe_errors) or "unspecified"
+        logger.warning(f"[VALIDATION] {request.url.path} rejected — {summary}")
         # jsonable_encoder converts non-serializable bits (e.g. the ValueError
         # embedded in ctx.error when a Pydantic v2 validator raises) to plain
         # JSON. Without it, a validator-raised ValueError makes json.dumps throw
         # and the handler 500s instead of returning a clean 422.
+        #
+        # `detail` keeps its loc/msg shape, which is what the CRM's
+        # summarizeAgentError reads to build the staff-facing reason.
         return JSONResponse(
             status_code=422,
-            content=jsonable_encoder({
-                "detail": exc.errors(),
-                "body_received": body.decode("utf-8", errors="replace"),
-            }),
+            content=jsonable_encoder({"detail": safe_errors}),
         )
 
     # API key middleware for /api/tn/* routes
