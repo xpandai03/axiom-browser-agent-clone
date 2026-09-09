@@ -408,6 +408,93 @@ duplicate cleanup. Guardrails forbid opening a real patient's chart, so the run 
 
 ## Next session — remaining
 1. ~~Identifier on a search row~~ — **closed** (dialog: none; Patients page: in the link `href`).
-2. **Chart header selectors** — open; needs a test record that exists.
+2. ~~Chart header selectors~~ — **closed 2026-09-08**, see below.
 3. ~~Exact row count~~ — **closed** (15). Still open: whether 15 is a hard cap.
 4. ~~Patients-page result markup~~ — **closed**.
+
+**All four recon questions are now closed.**
+
+---
+
+## ✅ Chart header selectors — VERIFIED 2026-09-08
+
+Read-only pass against the practice's `…TEST` record only. Standalone script (not
+`TNExecutor`, so the `[FILL]` value-logging leak could not fire), headless, no
+screenshots, no writes, no other chart opened. All values redacted at source.
+
+**Chart URL** — matches what the create flow produces:
+```
+https://www.therapynotes.com/app/patients/edit/<PATIENT_ID>/
+```
+Reached by Patients-page search → `a[data-testid='patient-search-patient-link']`.
+(Deep-linking still redirects to the patients list — see above.)
+
+**Hash tabs on the chart:**
+`#tab=Patient+Info` · `#tab=To-Do` · `#tab=Schedule` · `#tab=Documents` ·
+`#tab=Billing+Settings` · `#tab=Clinicians` · `#tab=Portal` · `#tab=Messages`
+
+### The four fields
+
+Each of name / DOB / phone appears **twice** — once in the page header
+(`patientheaderview-*`) and once in the info form (`PatientInformation__*`).
+Both are stable; the `PatientInformation__*` ids are recommended because the
+element holds the value in **one own text node with no child elements**, so no
+label has to be stripped.
+
+| Field | Recommended selector | Alternate | Reliability | Load |
+|---|---|---|---|---|
+| **Patient name** | `div#PatientInformation__PatientName` | `span[data-testid='patientheaderview-patientname-container'] span` | **Stable** — own id / own `data-testid` | first load |
+| **Date of birth** | `span#PatientInformation__DOBElem` | `span[data-testid='patientheaderview-dob-container']` | **Stable** — own id / own `data-testid` | first load |
+| **Phone (mobile)** | `div#PatientInformation__MobilePhoneElem a` | `span[data-testid='patientheaderview-phone-container'] a` | **Stable** — own id / own `data-testid`; value sits in a child `<a>` | first load |
+| **Assigned clinician** | `.clinician-assignments .clinician-assignment a` | — | **Class-based, semantic** — no `id` or `data-testid` anywhere within 3 ancestors. Not positional (not an nth-child), but weaker than the three above. | **only on `#tab=Clinicians`** |
+
+```
+"chart_patient_name":  ["div#PatientInformation__PatientName",
+                        "span[data-testid='patientheaderview-patientname-container'] span"]
+"chart_dob":           ["span#PatientInformation__DOBElem",
+                        "span[data-testid='patientheaderview-dob-container']"]
+"chart_mobile_phone":  ["div#PatientInformation__MobilePhoneElem a",
+                        "span[data-testid='patientheaderview-phone-container'] a"]
+"chart_clinicians":    [".clinician-assignments .clinician-assignment a"]   # #tab=Clinicians
+"chart_clinicians_tab":["a[href='#tab=Clinicians']"]
+```
+
+Name, DOB and phone were all present at 1.5 s after the chart opened and
+unchanged at 6.5 s — **no render delay to wait out.**
+
+### ⚠️ Date of birth is rendered SHORT
+The chart's DOB element holds **8 characters**, i.e. `m/d/yyyy` **without**
+zero-padding — not the `MM/DD/YYYY` the payload and the survey carry. Any
+comparison must normalise both sides. `_normalize_dob`
+(`services/api/tn_executor_v2.py:243`) already does exactly this and can be
+reused verbatim.
+
+### The clinician field — what a comparison must handle
+- **Not on the main view.** Costs one click on `a[href='#tab=Clinicians']` plus a
+  content swap (~2-4 s). It is a hash tab — no navigation, no write.
+- **There can be SEVERAL.** The markup is a list: `div.list-container.clinician-assignments`
+  containing repeated `div.clinician-assignment` entries. The test record had **one**.
+  Verification must handle 0, 1 and N.
+- **Each entry is an `<a>` whose text is the clinician's name alone** — no
+  credential suffix, no "Last, First" reordering. (Contrast the *appointment
+  dialog's* clinician dropdown, which renders `Last, First[, Credential]` and
+  needs token-subset matching — `tn_executor_v2.py:1929`.)
+- **So a comparison can be exact on trimmed text**, or token-subset for safety.
+  Because there may be several entries, the right question is
+  *"is the expected clinician among the assignments?"* — a membership test, not
+  an equality test against a single value.
+- A patient with an appointment but no assignment shows TherapyNotes' *"not
+  assigned to any clinicians yet"* notice instead (the same wording as the
+  broadcast in the 4 Sept incident). The test record did **not** show it.
+
+### What the chart does NOT give you
+- **No email on the main view.** Not among the labels rendered there
+  (`Clinicians`, `Date of Birth`, `Phone`, `Home Phone`). If the survey collects
+  an email, the chart is not where to compare it.
+- **Two phone fields exist** — `Phone` and `Home Phone` labels are both present,
+  and `PatientInformation__MobilePhoneElem` is specifically the **mobile**. A
+  verification comparing "the phone" must decide which, or check both.
+- **No patient identifier in any header element** — the id lives only in the URL
+  and in the Patients-page result anchors.
+- **The clinician costs an extra tab load**, so a verification that needs it
+  cannot be a single-page read.
