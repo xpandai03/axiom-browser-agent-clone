@@ -401,6 +401,7 @@ class TNExecutorV2:
         self._start_time = time.time()
         self._logs = []
         self._surfaced_overlays = []
+        self._save_problem_text = None
         self._overlays_reported = set()
         self._patient = patient  # carry callback config (run_id/callback_url/contact_id)
         logger.info(
@@ -1139,6 +1140,86 @@ class TNExecutorV2:
     # Phase 5: Save Patient
     # ========================================================================
 
+    # Longest redacted block we will carry into a log line or the CRM.
+    SAVE_PROBLEM_MAX_CHARS = 400
+
+    # Single probe over the container set that has actually produced captures.
+    # Returns BOTH:
+    #   duplicate  — the original predicate/order/slicing, so the duplicate
+    #                decision downstream is bit-for-bit what it was before
+    #   problem    — the "Problems With Your Entry" block with NO word filter
+    # plus which selector matched each, so the markup stops being a mystery.
+    #
+    # Redaction happens HERE, before anything crosses back into Python:
+    #   1. any clause announcing another record ("...also exists: <Name>") has
+    #      everything after its colon replaced — that is the exact sentence the
+    #      real captures showed disclosing a second patient's name;
+    #   2. the subject patient's own name tokens are removed wherever they appear.
+    # What survives is the reason a field was rejected, which is the point.
+    _SAVE_PROBLEM_PROBE_JS = r"""
+    (args) => {
+      const [nameTokens, MAX] = args;
+      const CONTAINERS = [
+        '.Dialog', '[role="dialog"]', '.modal',
+        '.validation-summary-errors', '.alert-danger',
+        '[role="alert"]', '#ElementDropbox .Dialog'
+      ];
+      const HEADING = 'Problems With Your Entry';
+      const DISCLOSE = /(exists|similar|match(es)?|duplicate of)[^:\n]*:\s*[^\n]*/gi;
+
+      const redact = (s) => {
+        if (!s) return s;
+        let out = String(s);
+        out = out.replace(DISCLOSE, (m) => m.replace(/:\s*[^\n]*$/, ': [REDACTED]'));
+        for (const t of nameTokens) {
+          if (!t || t.length < 2) continue;
+          const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          out = out.replace(new RegExp('\\b' + esc + '\\b', 'gi'), '[REDACTED]');
+        }
+        return out.replace(/\s+/g, ' ').trim().slice(0, MAX);
+      };
+
+      let dup = null, dupSel = null, prob = null, probSel = null;
+      for (const sel of CONTAINERS) {
+        const el = document.querySelector(sel);
+        if (!el || el.offsetParent === null) continue;
+        const text = el.innerText || '';
+        // Unchanged duplicate predicate — first visible container wins, as before.
+        if (dup === null &&
+            (text.includes('duplicate') || text.includes('Duplicate') || text.includes('already exists'))) {
+          dup = text.trim().slice(0, 200);
+          dupSel = sel;
+        }
+        // The refusal block: same containers, no word filter.
+        if (prob === null && text.includes(HEADING)) {
+          prob = text.trim();
+          probSel = sel;
+        }
+      }
+      // Body fallbacks — duplicate's is the original, verbatim.
+      const body = document.body.innerText || '';
+      if (dup === null &&
+          (body.includes('already exists') || body.includes('duplicate') || body.includes('Duplicate'))) {
+        const idx = body.indexOf('already exists');
+        if (idx >= 0) { dup = body.slice(Math.max(0, idx - 30), idx + 80).trim(); dupSel = 'body (fallback)'; }
+        else {
+          const idx2 = body.indexOf('uplicate');
+          if (idx2 >= 0) { dup = body.slice(Math.max(0, idx2 - 30), idx2 + 80).trim(); dupSel = 'body (fallback)'; }
+        }
+      }
+      if (prob === null) {
+        const i = body.indexOf(HEADING);
+        if (i >= 0) { prob = body.slice(i, i + 800).trim(); probSel = 'body (fallback)'; }
+      }
+      return {
+        duplicate: dup === null ? null : redact(dup),
+        duplicateSelector: dupSel,
+        problem: prob === null ? null : redact(prob),
+        problemSelector: probSel,
+      };
+    }
+    """
+
     async def _phase_save_patient(self, patient: TNPatientInputV2) -> bool:
         """Click Save New Patient, confirm creation, detect errors/duplicates."""
         phase = TNPhaseV2.SAVE
@@ -1203,37 +1284,43 @@ class TNExecutorV2:
                     phase_start,
                 )
 
-            # Step 5: Check for duplicate patient warning
-            # Scoped to dialog/modal/alert containers first, falls back to body
-            duplicate_text = await page.evaluate("""
-                () => {
-                    const containers = [
-                        '.Dialog', '[role="dialog"]', '.modal',
-                        '.validation-summary-errors', '.alert-danger',
-                        '[role="alert"]', '#ElementDropbox .Dialog'
-                    ];
-                    for (const sel of containers) {
-                        const el = document.querySelector(sel);
-                        if (el && el.offsetParent !== null) {
-                            const text = el.innerText || '';
-                            if (text.includes('duplicate') || text.includes('Duplicate') || text.includes('already exists')) {
-                                return text.trim().slice(0, 200);
-                            }
-                        }
-                    }
-                    const body = document.body.innerText || '';
-                    if (body.includes('already exists') || body.includes('duplicate') || body.includes('Duplicate')) {
-                        const idx = body.indexOf('already exists');
-                        if (idx >= 0) return body.slice(Math.max(0, idx - 30), idx + 80).trim();
-                        const idx2 = body.indexOf('uplicate');
-                        if (idx2 >= 0) return body.slice(Math.max(0, idx2 - 30), idx2 + 80).trim();
-                    }
-                    return null;
-                }
-            """)
+            # Step 5: One probe over the containers that demonstrably work.
+            #
+            # WHY THIS SHAPE. TherapyNotes renders a block headed "Problems With
+            # Your Entry" when it refuses a save. It has been captured three times
+            # (4 Sep 20:21, 8 Sep 18:33, 8 Sep 19:44) and EVERY capture came from
+            # this duplicate probe, never from the validation probe in Step 4 —
+            # so .validation-summary-errors/.alert-danger/[role=alert] are not
+            # where TN puts it, and these containers are.
+            #
+            # The old defect was the word filter: this probe only returned text
+            # containing "duplicate"/"already exists", so a validation refusal was
+            # invisible even though it was on screen. It now returns the block
+            # whatever it says, while the DUPLICATE decision below keeps the exact
+            # original containers, predicate, order and slicing.
+            #
+            # Text is redacted in the browser, so a name never enters this process.
+            name_tokens = _name_tokens(f"{patient.first_name} {patient.last_name}")
+            probe = await page.evaluate(
+                self._SAVE_PROBLEM_PROBE_JS, [name_tokens, self.SAVE_PROBLEM_MAX_CHARS]
+            )
+            probe = probe or {}
+            duplicate_text = probe.get("duplicate")
+
+            # Record the refusal reason wherever it was found, whatever it says.
+            problem_text = probe.get("problem")
+            if problem_text:
+                self._save_problem_text = problem_text
+                logger.warning(
+                    f'[SAVE] Problems With Your Entry '
+                    f'(matched {probe.get("problemSelector")}): "{problem_text}"'
+                )
 
             if duplicate_text:
-                logger.warning(f"[SAVE] Duplicate detected: {duplicate_text}")
+                logger.warning(
+                    f"[SAVE] Duplicate detected "
+                    f'(matched {probe.get("duplicateSelector")}): {duplicate_text}'
+                )
                 await self._capture_screenshot("save_duplicate_detected")
                 return await self._fail_phase(
                     phase, "patient_duplicate_detected",
@@ -2950,6 +3037,13 @@ class TNExecutorV2:
         # Attach any surfaced TN overlay text so the message reaches output.
         if self._surfaced_overlays:
             message = f"{message} | TN overlay(s) surfaced: " + " || ".join(self._surfaced_overlays)
+        # Attach whatever TherapyNotes said at save time, if anything. A refusal
+        # surfaces phases later as a missing Documents tab, so carrying the reason
+        # forward is what turns that into a diagnosable failure. Already redacted
+        # in the browser; reaches the CRM through the existing progress callback.
+        if getattr(self, "_save_problem_text", None):
+            message = f'{message} | TherapyNotes reported at save: "{self._save_problem_text}"'
+
         screenshot_path = await self._capture_screenshot(f"{phase.value}_failure")
         self._record_log(phase, "failure", message, screenshot_path, phase_start)
         self._pending_failure = {
