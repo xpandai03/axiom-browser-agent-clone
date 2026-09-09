@@ -192,9 +192,14 @@ SELECTORS_V2 = {
         "input#CalendarEntryEditor__PatientSelect",
     ],
     # Incremental-search result bubbles (shared shape for patient + clinician)
-    "appt_incremental_result": [
-        ".IncrementalSearchContainerNode .ContentBubble.IncrementalSearch",
-        ".ContentBubble.IncrementalSearch",
+    # A ROW, not the dropdown. Recon (docs/selectors/tn_v2_phases.md) verified
+    # that .ContentBubble.IncrementalSearch is the CONTAINER — one per search —
+    # and each patient is an a.IncrementalSearchLink inside it. Targeting the
+    # container meant `.filter(has_text=...).first` matched the whole dropdown
+    # and clicked that, so no per-row selection was happening at all.
+    "appt_patient_result_row": [
+        ".IncrementalSearchContainerNode .ContentBubble.IncrementalSearch a.IncrementalSearchLink",
+        ".ContentBubble.IncrementalSearch a.IncrementalSearchLink",
     ],
     "appt_type_select": [
         "select#CalendarEntryEditor__TypeSelect",
@@ -238,6 +243,28 @@ def _name_tokens(text: str) -> List[str]:
     Used for order-independent clinician matching (TN renders 'Last, First').
     """
     return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
+
+
+_DOB_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+
+
+def _normalize_dob(text: Optional[str]) -> Optional[str]:
+    """Pull an m/d/yyyy date out of `text` and return it zero-padded MM/DD/YYYY.
+
+    The dropdown renders 'DOB: m/d/yyyy' with variable-width month and day, while
+    the payload carries MM/DD/YYYY. Both sides go through here so the comparison
+    is on the date, not on its formatting.
+
+    Returns None when no date can be read — and a row whose date of birth cannot
+    be read is a row that will never be selected.
+    """
+    if not text:
+        return None
+    m = _DOB_RE.search(text)
+    if not m:
+        return None
+    mm, dd, yyyy = m.groups()
+    return f"{int(mm):02d}/{int(dd):02d}/{yyyy}"
 
 
 class PdfFormatError(Exception):
@@ -1549,24 +1576,25 @@ class TNExecutorV2:
             await ps.click()
             await ps.fill("")
             await ps.press_sequentially(full_name, delay=80)
+            # Wait for ROWS, not for the container. The container renders as soon
+            # as there is a dropdown at all, so polling it declared success before
+            # any patient had been listed.
             found = await self._poll_condition(
-                condition_fn=lambda: self._v2_incremental_result_visible(full_name),
-                description=f"patient result '{full_name}'",
+                condition_fn=self._patient_result_rows_present,
+                description="patient search rows",
                 timeout_ms=6000,
             )
             if not found:
                 return await self._fail_phase(
                     phase, "appointment_creation_failed",
-                    f"Patient '{full_name}' not found in scheduler search "
+                    "Patient search returned no rows in the scheduler "
                     "(patient may not have persisted / search index lag)",
                     phase_start,
                 )
-            if not await self._click_incremental_result(full_name, "patient"):
-                return await self._fail_phase(
-                    phase, "appointment_creation_failed",
-                    f"Could not click patient result '{full_name}'",
-                    phase_start,
-                )
+            # Identify the row by name AND date of birth, or fail. _select_patient_row
+            # records its own failure reason, so just propagate.
+            if not await self._select_patient_row(patient, phase, phase_start):
+                return False
             await asyncio.sleep(1.5)
 
             # Appointment Type = Therapy Intake (value 0) — I6
@@ -1950,83 +1978,183 @@ class TNExecutorV2:
         logger.info(f"[SCHEDULE] Clinician selected: {clinician_name}")
         return True
 
-    async def _click_incremental_result(
-        self, text: str, label: str, match_tokens: Optional[List[str]] = None
-    ) -> bool:
-        """Click the incremental-search result bubble matching `text`.
+    # ========================================================================
+    # Patient selection in the appointment dialog
+    # ========================================================================
+    #
+    # Recon-verified shape (docs/selectors/tn_v2_phases.md):
+    #
+    #   div.ContentBubble.IncrementalSearch          <- ONE per search
+    #     div.ContentBubbleContent
+    #       a.IncrementalSearchLink                  <- ONE per patient
+    #         span[data-testid] > span               <- name
+    #         span.IncrementalSearchLinkDescription  <- "DOB: m/d/yyyy"
+    #
+    # Every row carries href="#" and the SAME literal data-testid, so there is no
+    # per-patient attribute anywhere in the markup. Rendered text is the only
+    # discriminator, which is why the date of birth is used rather than the name
+    # alone: a common surname renders 15 rows.
 
-        Default (match_tokens=None): exact substring via Playwright has_text —
-        used by the patient flow, which renders 'First Last DOB: ...'.
-        match_tokens set: pick the first visible bubble whose tokens are a
-        superset of match_tokens (order-independent) — used by the clinician
-        flow, which renders 'Last, First[, Credential]'.
-        """
-        if match_tokens is not None:
-            loc = await self._find_incremental_bubble_by_tokens(match_tokens)
-            if loc is not None:
-                await self._safe_click(loc, f"{label} result '{text}'")
-                return True
-            return False
-        for sel in SELECTORS_V2["appt_incremental_result"]:
-            try:
-                loc = self._page.locator(sel).filter(has_text=text).first
-                if await loc.count() > 0:
-                    await self._safe_click(loc, f"{label} result '{text}'")
-                    return True
-            except Exception:
-                continue
-        return False
+    # Row count at which the result set is treated as possibly TRUNCATED.
+    #
+    # Recon observed exactly 15 rows for a common surname. Whether 15 is a hard
+    # cap could not be established: the limit is applied server-side, and the
+    # container has no scroll viewport (clientHeight 0, overflow-y visible) and
+    # no pagination control to infer one from.
+    #
+    # That uncertainty is the whole reason for this constant. If TN caps the list,
+    # "exactly one row matched" can be true of a TRUNCATED set while another
+    # patient with the same name and date of birth sits past the end — and the run
+    # would bind the wrong person to a real appointment with no signal that
+    # anything was hidden. So a result set at or above this size is refused
+    # outright rather than selected from.
+    PATIENT_RESULT_CAP_SUSPECT = 15
 
-    async def _v2_incremental_result_visible(
-        self, text: str, match_tokens: Optional[List[str]] = None
-    ) -> bool:
-        if match_tokens is not None:
-            return (await self._find_incremental_bubble_by_tokens(match_tokens)) is not None
-        for sel in SELECTORS_V2["appt_incremental_result"]:
-            try:
-                loc = self._page.locator(sel).filter(has_text=text)
-                if await loc.count() > 0 and await loc.first.is_visible():
-                    return True
-            except Exception:
-                continue
-        return False
+    # Match rows in the BROWSER and return only indices and counts. No patient
+    # name or date of birth is ever returned to Python, so none can reach a log
+    # line, an exception message, or the CRM.
+    _MATCH_ROWS_JS = r"""
+    (rows, args) => {
+      const [wantTokens, wantDob] = args;
+      const toks = (s) => (s || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      const normDob = (s) => {
+        const m = (s || "").match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
+        if (!m) return null;
+        return String(m[1]).padStart(2, "0") + "/" + String(m[2]).padStart(2, "0") + "/" + m[3];
+      };
+      const want = wantTokens.slice();
+      let nameMatches = 0, dobUnreadable = 0, dobMismatches = 0;
+      const matched = [];
+      rows.forEach((r, i) => {
+        const dobEl = r.querySelector(".IncrementalSearchLinkDescription");
+        const dobTxt = dobEl ? (dobEl.innerText || dobEl.textContent || "") : "";
+        // The name is the row's text minus the description block.
+        let nameTxt = r.innerText || r.textContent || "";
+        if (dobTxt) nameTxt = nameTxt.split(dobTxt).join(" ");
+        const rowToks = new Set(toks(nameTxt));
+        const nameOk = want.every((t) => rowToks.has(t));
+        if (!nameOk) return;
+        nameMatches++;
+        const rowDob = normDob(dobTxt);
+        if (rowDob === null) { dobUnreadable++; return; }   // undatable row: never selected
+        if (wantDob === null) { matched.push(i); return; }  // no expected DOB: name-only
+        if (rowDob === wantDob) { matched.push(i); } else { dobMismatches++; }
+      });
+      return { total: rows.length, matched, nameMatches, dobUnreadable, dobMismatches };
+    }
+    """
 
-    async def _find_incremental_bubble_by_tokens(self, match_tokens: List[str]):
-        """Return the first visible incremental-search bubble whose tokens are a
-        superset of `match_tokens` (case-insensitive, order-independent), or None.
-
-        Logs a warning if more than one bubble matches (picks the first).
-        """
-        want = set(match_tokens)
-        matches = []
-        for sel in SELECTORS_V2["appt_incremental_result"]:
+    async def _patient_result_rows(self):
+        """Locator over the dropdown's patient ROWS (first tier that has any)."""
+        for sel in SELECTORS_V2["appt_patient_result_row"]:
             try:
                 loc = self._page.locator(sel)
-                n = await loc.count()
-                for i in range(n):
-                    item = loc.nth(i)
-                    try:
-                        if not await item.is_visible():
-                            continue
-                        txt = await item.inner_text()
-                    except Exception:
-                        continue
-                    if want.issubset(set(_name_tokens(txt))):
-                        matches.append((item, txt.strip()))
+                if await loc.count() > 0:
+                    return loc
             except Exception:
                 continue
-            if matches:
-                break  # first selector tier that yields matches wins
-        if not matches:
-            return None
-        if len(matches) > 1:
-            picked = matches[0][1]
-            others = [m[1] for m in matches[1:]]
-            logger.warning(
-                f"[CLINICIAN] Multiple matches for tokens {match_tokens} — "
-                f"picking first: '{picked}' (others: {others})"
+        return self._page.locator(SELECTORS_V2["appt_patient_result_row"][0])
+
+    async def _patient_result_rows_present(self) -> bool:
+        """Poll condition: has the dropdown rendered at least one ROW yet?"""
+        try:
+            return await (await self._patient_result_rows()).count() > 0
+        except Exception:
+            return False
+
+    async def _select_patient_row(
+        self, patient: TNPatientInputV2, phase: TNPhaseV2, phase_start: float
+    ) -> bool:
+        """
+        Select the ONE row that is this patient, or fail.
+
+        Exactly one row surviving name AND date-of-birth matching is a match.
+        Anything else fails: there is deliberately no tiebreak, no scoring and no
+        "closest" fallback. Selecting the wrong row binds a real patient to a real
+        appointment in a live EHR, so an ambiguous dropdown is a stop, not a
+        judgement call.
+        """
+        rows = await self._patient_result_rows()
+        try:
+            total = await rows.count()
+        except Exception:
+            total = 0
+
+        if total == 0:
+            return await self._fail_phase(
+                phase, "appointment_creation_failed",
+                "Patient search returned no selectable rows in the appointment "
+                "dialog (the patient may not have persisted, or the search index "
+                "may be lagging).",
+                phase_start,
             )
-        return matches[0][0]
+
+        # Refuse a possibly-truncated list BEFORE looking for a unique match —
+        # uniqueness within a truncated set proves nothing. See the constant.
+        if total >= self.PATIENT_RESULT_CAP_SUSPECT:
+            return await self._fail_phase(
+                phase, "appointment_creation_failed",
+                f"Patient search returned {total} rows, at or above the "
+                f"{self.PATIENT_RESULT_CAP_SUSPECT}-row point where TherapyNotes "
+                "may be truncating the list. Refusing to select from a result set "
+                "that could be hiding another identical match. Narrow the search "
+                "or schedule this appointment by hand.",
+                phase_start,
+            )
+
+        want_tokens = _name_tokens(f"{patient.first_name} {patient.last_name}")
+        want_dob = _normalize_dob(patient.dob)
+
+        try:
+            res = await rows.evaluate_all(self._MATCH_ROWS_JS, [want_tokens, want_dob])
+        except Exception as e:
+            return await self._fail_phase(
+                phase, self._reason_for(e, "appointment_creation_failed"),
+                f"Could not evaluate patient search rows: {str(e)[:160]}",
+                phase_start,
+            )
+
+        matched = res.get("matched") or []
+        # Counts only — no names, no dates.
+        logger.info(
+            f"[PATIENT SELECT] rows={res.get('total')} name_matches={res.get('nameMatches')} "
+            f"dob_matches={len(matched)} dob_mismatches={res.get('dobMismatches')} "
+            f"dob_unreadable={res.get('dobUnreadable')} "
+            f"expected_dob_available={want_dob is not None}"
+        )
+
+        if len(matched) == 1:
+            await self._safe_click(rows.nth(matched[0]), "patient search row")
+            logger.info("[PATIENT SELECT] Selected the single unambiguous row")
+            return True
+
+        if len(matched) == 0:
+            if res.get("nameMatches"):
+                detail = (
+                    f"{res['nameMatches']} row(s) matched the name but none matched the "
+                    f"expected date of birth ({res.get('dobMismatches')} differed, "
+                    f"{res.get('dobUnreadable')} had no readable date)."
+                )
+            else:
+                detail = f"No row matched the patient's name among {res.get('total')} result(s)."
+            return await self._fail_phase(
+                phase, "appointment_creation_failed",
+                f"Could not identify the patient in the appointment dialog. {detail} "
+                "Not selecting a row on a partial match.",
+                phase_start,
+            )
+
+        # >1 survivor: same name AND same date of birth. Nothing in the markup can
+        # tell them apart, so a human has to.
+        return await self._fail_phase(
+            phase, "appointment_creation_failed",
+            f"{len(matched)} patients in the appointment dialog share this name AND "
+            f"date of birth (out of {res.get('total')} result(s)); the dropdown "
+            "carries no other identifying attribute to separate them. Refusing to "
+            "guess — schedule this appointment by hand and check for duplicate "
+            "records.",
+            phase_start,
+        )
 
     async def _v2_appt_dialog_closed(self) -> bool:
         try:

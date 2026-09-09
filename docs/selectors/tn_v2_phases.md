@@ -264,3 +264,150 @@ Recon screenshots were written to the gitignored `screenshots/recon/` directory 
 - **Success/error selectors for scheduling are unverified** (no appointment was saved) — capture them on the first real Step-3 run and update this doc.
 - **Pure utilities** in `tn_executor.py` (`_dismiss_blocking_dialogs`, `_safe_click`, `_poll_condition`, `_resolve_selector`, `_capture_screenshot`) are all directly reusable for the new phases — they were exercised throughout recon and work on both surfaces. (Per Step-1 lock B5 these remain cloned inside `TNExecutorV2`, not shared.)
 - **`set_input_files` works on hidden/native file inputs** — no need to handle the visual "Choose File" button or drag-and-drop.
+
+---
+
+# Recon: survey-to-chart pairing (2026-09-08)
+
+Two read-only passes against live production (practice `FamilyConnection505`).
+**No save/create/edit/upload/delete. No dropdown row clicked. No real patient's chart opened.**
+
+> **Method:** a standalone Playwright script that deliberately does NOT import `TNExecutor`, so the
+> known `[FILL]` value-logging leak could not fire. Headless, no screenshots. Text nodes redacted
+> in-browser and never returned. Structural attribute values (`data-testid`, `id`, `class`, `href`,
+> `data-rum-description`) shown verbatim, with an automatic guard that redacts any value echoing
+> readable text from its own row — that guard never had to fire; all test ids proved to be generic
+> literals, not names.
+
+**Status: 3 of 4 questions closed.** The chart header (Q2) is still open — see the bottom.
+
+---
+
+## ✅ Q1 — Does a search result carry a patient identifier?
+
+**Appointment-dialog search: NO. Patients-page search: YES.**
+
+### Appointment dialog — no identifier, by exhaustive attribute enumeration
+Every row's complete attribute set:
+```html
+<a tabindex="-1" class="IncrementalSearchLink"
+   data-testid="incremental-search-link" href="#">          <!-- generic; identical on all rows -->
+  <span data-testid="incremental-search-link-match-container">
+    <span data-testid="incremental-search-link-match-text">[REDACTED name]</span>
+  </span>
+  <span data-testid="incremental-search-link-match-container"
+        class="IncrementalSearchLinkDescription" style="…">
+    <span data-testid="incremental-search-link-match-text">[REDACTED "DOB: m/d/yyyy"]</span>
+  </span>
+</a>
+```
+`href` is `"#"` on all 15 rows and `data-testid` is the same literal on all 15. **There is no
+per-patient attribute of any kind.** A chart URL cannot be derived from this dropdown; the only way
+to resolve a row to a patient is its rendered text.
+
+### Patients page — the identifier IS here
+Result rows expose the id in the link `href`:
+```
+"patients_page_result_name_link": ["a[data-testid='patient-search-patient-link']"]   # href → /app/patients/edit/<PATIENT_ID>/
+"patients_page_result_dob_link":  ["a[data-testid='patient-search-dob-link']"]       # href → same id
+```
+**Implication:** survey-to-chart pairing should resolve through the **Patients-page** search, not the
+appointment dialog. That path yields both a stable `data-testid` and the chart id in one read.
+
+> `<PATIENT_ID>` length is **not fixed**: 22 chars observed in Patients-page results, 16 chars in
+> URLs returned by the create flow. Treat it as an opaque `[A-Za-z0-9_-]{16,22}` token.
+
+---
+
+## ✅ Q3 — What a multi-result dropdown looks like
+
+**`.ContentBubble.IncrementalSearch` is the dropdown CONTAINER, not a row.** Rows are
+`a.IncrementalSearchLink` inside it. This corrects §6 of the scheduling table above.
+
+```
+span.IncrementalSearchContainerNode
+└── div.ContentBubble.IncrementalSearch        [id, class, style]
+    └── div.ContentBubbleContent               [class, data-rum-description, style]
+        ├── a.IncrementalSearchLink            ← ONE PER PATIENT
+        └── … 15 rows observed for a common surname
+```
+
+| Question | Answer |
+|---|---|
+| Exact row count (common surname) | **15** |
+| Is 15 a cap? | **Unconfirmed** — a suspiciously round number; needs a surname with >15 matches to settle |
+| Scroll / pagination | **Neither.** Container `scrollHeight=374`, `clientHeight=0`, `overflow-y: visible` — not a scrolling viewport; no pagination control |
+| Same attributes on every row? | **Yes** — all 15 identical (`data-testid="incremental-search-link"`, `href="#"`, 4 spans) |
+| DOB on every row? | **Yes, all 15** — as its own `span.IncrementalSearchLinkDescription`, and it parses as a real `m/d/yyyy` date on every row |
+| No match | **Zero** `.ContentBubble.IncrementalSearch` nodes; the container node remains (`childCount=1`, innerHTML length 321). "No results" = **bubble absent** |
+
+Because DOB is a **separate element on every row**, disambiguating candidates is a **read**, not a
+click-through. That is what makes safe multi-match handling possible.
+
+### ⚠️ Consequence for shipped code — a real bug, NOT fixed here
+`SELECTORS_V2["appt_incremental_result"]` (`services/api/tn_executor_v2.py:195-198`) targets the
+**container**:
+- `_click_incremental_result` (`:1970-1975`) runs `.filter(has_text=…).first` against the whole
+  dropdown and clicks **that** — it never selects a row.
+- `_find_incremental_bubble_by_tokens` (`:1994-2029`) iterates containers, so its multi-match warning
+  (`:2024`) can **never fire**: 15 patients still produce exactly 1 bubble.
+
+The correct row selector is `.ContentBubble.IncrementalSearch a.IncrementalSearchLink`.
+
+> **FIXED 2026-09-08** — `appt_patient_result_row` now targets the row, and `_select_patient_row`
+> matches on name **and** date of birth, selecting only on exactly one survivor and failing on zero,
+> several, or a possibly-truncated (≥15-row) result set. Verified synthetically in
+> `tests/test_patient_row_selection.py` against fixtures that reproduce the container+rows shape.
+> The clinician search was checked and does **not** share this defect: it uses its own in-widget
+> selector `#CalendarEntryEditor__ClinicianSelect [role='listbox'] [role='option']`, which is
+> already per-row.
+
+---
+
+## ✅ Q4 — The Patients page has its own search
+
+Broader than the dialog's (name, account #, phone, insurance ID):
+```
+"patients_page_search_input":  ["input#ctl00_BodyContent_TextBoxSearchPatientName"]  # placeholder "Name, Acct #, Phone, or Ins ID"
+"patients_page_search_submit": ["input#ctl00_BodyContent_ButtonSearch"]
+"global_sidebar_search":       ["input#SidebarSearchInput"]                          # placeholder "Search"
+```
+Result table (classic WebForms — stable ids):
+```
+"patients_page_result_table": ["table#PatientSearchTableList"]
+"patients_page_result_row":   ["#PatientSearchTableList tr.Row"]
+```
+Row shape: 11 `td.v-align-top` cells. Cell 2 holds the name link, **cell 3 holds the DOB** (verified
+by date-pattern match) and is itself a link carrying the patient id. Cells carry **no `data-testid`**
+— the `data-testid` hooks are on the anchors, so **anchor-based selectors are reliable; cell-index
+selectors are positional and should not be used.**
+
+---
+
+## ✅ VERIFIED — a chart cannot be deep-linked in a fresh session
+`page.goto("/app/patients/edit/<id>/")` on a newly authenticated session is **redirected to
+`/app/patients/`**, with no `#tab=` links rendered. The chart must be reached by navigating from the
+Patients list (or immediately after a save, as the create flow already does). Any pairing design that
+assumed "id ⇒ direct URL" needs the navigation step.
+
+---
+
+## ❓ Q2 — Chart header selectors: STILL OPEN
+
+Name, date of birth, phone and assigned clinician are **not mapped**. No selector is guessed here.
+
+**Why it's open:** the designated test record (`…TEST`, 16-char id) could not be found — zero results
+by surname *and* by first name in the appointment-dialog search, and the Patients-page search for the
+same first name returned a **different** record (22-char id). The record may have been deleted during
+duplicate cleanup. Guardrails forbid opening a real patient's chart, so the run stopped there.
+
+**To close it, the next session needs a confirmed-present test record**, then:
+`Patients page → search → click a[data-testid='patient-search-patient-link'] → map the four fields`.
+
+---
+
+## Next session — remaining
+1. ~~Identifier on a search row~~ — **closed** (dialog: none; Patients page: in the link `href`).
+2. **Chart header selectors** — open; needs a test record that exists.
+3. ~~Exact row count~~ — **closed** (15). Still open: whether 15 is a hard cap.
+4. ~~Patients-page result markup~~ — **closed**.
