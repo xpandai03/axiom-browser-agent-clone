@@ -254,6 +254,20 @@ async def main():
                 r.check(f"'{tok}' absent", tok not in blob, blob[:180])
             await page.close()
 
+            print("\n[N] The search query is the SURNAME ALONE, not the full name")
+            # A live run proved "First Last" can miss a patient stored as
+            # "First Middle Last" while the surname alone returns them. Pin it.
+            page = await browser.new_page(viewport={"width": 1400, "height": 1000})
+            await page.route(f"{ORIGIN}/**", lambda r: asyncio.ensure_future(
+                r.fulfill(status=200, content_type="text/html", body=results_page([]))))
+            await page.goto(f"{ORIGIN}/app/patients/")
+            ex = make_ex(page)
+            await ex._phase_search(make_input())
+            typed = await page.input_value("#ctl00_BodyContent_TextBoxSearchPatientName")
+            r.check("searched on the surname alone", typed == LAST, typed)
+            r.check("did NOT include the first name", FIRST not in typed, typed)
+            await page.close()
+
             print("\n[M] Phone comparison is on digits, shape-insensitive")
             for shape in ["(505) 555-0142", "505-555-0142", "5055550142", "+1 505 555 0142"]:
                 r.check(f"{shape!r} -> same digits", _digits(shape)[-10:] == "5055550142")
