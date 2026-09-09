@@ -416,6 +416,32 @@ duplicate cleanup. Guardrails forbid opening a real patient's chart, so the run 
 
 ---
 
+## ✅ Patients-page result cap — MEASURED 2026-09-09
+
+Two read-only searches on common surnames, no chart opened, no result clicked.
+
+| Search | `#PatientSearchTableList tr.Row` | Pagination present |
+|---|---|---|
+| common surname A | **10** | yes |
+| common surname B | **10** | yes |
+
+**The Patients table pages at TEN rows.** Pagination is explicit, so this needed
+no inference:
+```
+"patients_page_pager":      ["a#DynamicTablePagingLink"]
+"patients_page_pager_next": ["a#DynamicTablePagingLink.Next"]   # also .Last, .SpecificPage, .CurrentPage
+```
+Rendered as `Page 1` · `2` · `›` · `»`.
+
+> A `"20 of 24"` string also appears on the page, but **identically for both
+> searches**, so it is not a result counter for the query — do not read it as one.
+
+**Consequence for anything that reads these results:** a first page of 10 means
+there are more results not visible. The survey-attach route's truncation guard is
+set to 10 for this reason. The *definitive* signal is the presence of the pager
+rather than the row count, which would also let a genuinely-complete set of
+exactly ten through — noted as a follow-up, not built.
+
 ## ✅ Chart header selectors — VERIFIED 2026-09-08
 
 Read-only pass against the practice's `…TEST` record only. Standalone script (not

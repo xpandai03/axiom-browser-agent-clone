@@ -232,16 +232,27 @@ async def main():
             r.check("no chart opened", ex._chart_url is None)
             await page.close()
 
-            print("\n[J] Fifteen results -> refuses WITHOUT opening a chart")
+            print("\n[J] A FULL page of results -> refuses WITHOUT opening a chart")
+            # Measured 2026-09-09: the Patients table pages at TEN rows.
+            CAP = SurveyAttachExecutor.RESULT_CAP_SUSPECT
+            r.check("threshold is the measured page size (10)", CAP == 10, CAP)
             rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 0 else "1/1/1971")
-                    for i in range(15)]
+                    for i in range(CAP)]
             ex, page, ok = await run_search_select(browser, rows, make_input())
-            r.check("refused despite a unique DOB match being present", ok is False)
+            r.check("full page refused despite a unique DOB match being present", ok is False)
             r.check("reason is result_set_possibly_truncated",
                     ex._pending.get("reason") == "result_set_possibly_truncated",
                     ex._pending.get("reason"))
             r.check("no chart opened", ex._chart_url is None)
-            r.check("names the threshold", "15" in ex._pending.get("message", ""))
+            r.check("names the page size", str(CAP) in ex._pending.get("message", ""))
+            await page.close()
+
+            print("\n[J2] One row BELOW the page size -> proceeds (not a false refusal)")
+            rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 0 else "1/1/1971")
+                    for i in range(CAP - 1)]
+            ex, page, ok = await run_search_select(browser, rows, make_input())
+            r.check("partial page proceeds", ok is True, ex._pending.get("message", ""))
+            r.check("opened the DOB-matching chart", "Zzid0" in (ex._chart_url or ""), ex._chart_url)
             await page.close()
 
             print("\n[K] Name matches but date of birth does not -> patient_not_found at select")

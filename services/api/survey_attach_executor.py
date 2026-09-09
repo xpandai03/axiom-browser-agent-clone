@@ -89,21 +89,26 @@ class SurveyAttachExecutor:
     STEP_TIMEOUT_MS = 15_000
     CLINICIAN_TAB_TIMEOUT_MS = 10_000
 
-    # Result count at or above which the set is treated as possibly TRUNCATED and
-    # refused without opening any chart.
+    # Result count at or above which the set is treated as TRUNCATED and refused
+    # without opening any chart.
     #
-    # 15 is imported from the appointment-dialog dropdown, where recon counted
-    # exactly 15 rows for a common surname and could not establish whether that
-    # is a hard cap (the limit is server-side; the container has no scroll
-    # viewport or pagination to infer one from). The Patients-page table's own
-    # cap has NOT been measured — the only observed search returned one row.
+    # MEASURED 2026-09-09, not borrowed. Two searches on common surnames each
+    # returned exactly 10 tr.Row entries, and the page rendered explicit
+    # pagination alongside them — a[id=DynamicTablePagingLink] with "Page 1",
+    # "2", "›" and "»". So the Patients table pages at TEN rows, and a full first
+    # page means there are more results the agent cannot see.
     #
-    # Adopting the dropdown's number here is deliberately conservative: if the
-    # table truncates, "narrowed to exactly one" can be true of an incomplete set
-    # while another patient with the same name and date of birth sits past the
-    # end, and this route would attach to the wrong chart with no signal. A
-    # refusal at 15 costs a manual upload; the alternative cannot be undone.
-    RESULT_CAP_SUSPECT = 15
+    # This previously held 15, imported from the appointment-dialog dropdown. That
+    # value was not merely imprecise, it was INERT: the table never returns more
+    # than 10 rows, so the guard could never fire, and the route would have
+    # narrowed within a truncated page and opened a chart — the exact failure the
+    # guard exists to prevent.
+    #
+    # At 10 the guard is deliberately conservative: a search returning exactly ten
+    # complete results also refuses, because a full page is indistinguishable from
+    # a truncated one on row count alone. The definitive signal is the presence of
+    # a pager, which is a better test and is noted as a follow-up.
+    RESULT_CAP_SUSPECT = 10
 
     def __init__(self, runtime, credentials):
         self._runtime = runtime
@@ -270,10 +275,11 @@ class SurveyAttachExecutor:
         if total >= self.RESULT_CAP_SUSPECT:
             return self._refuse(
                 phase, "result_set_possibly_truncated",
-                f"Search returned {total} rows, at or above the "
-                f"{self.RESULT_CAP_SUSPECT}-row point where the result set may be "
-                "truncated. Refusing to select from a list that could be hiding "
-                "another identical match — attach this document by hand.",
+                f"Search returned {total} rows, filling the "
+                f"{self.RESULT_CAP_SUSPECT}-row page the TherapyNotes patient list "
+                "pages at, so there are very likely more results the agent cannot "
+                "see. Refusing to select from a list that could be hiding another "
+                "identical match — attach this document by hand.",
                 t0,
             )
 
