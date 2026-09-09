@@ -491,9 +491,21 @@ reused verbatim.
 - **No email on the main view.** Not among the labels rendered there
   (`Clinicians`, `Date of Birth`, `Phone`, `Home Phone`). If the survey collects
   an email, the chart is not where to compare it.
-- **Two phone fields exist** — `Phone` and `Home Phone` labels are both present,
-  and `PatientInformation__MobilePhoneElem` is specifically the **mobile**. A
-  verification comparing "the phone" must decide which, or check both.
+- **FIVE phone fields exist**, verified 2026-09-09 by enumerating every chart id
+  containing "phone":
+  `PatientInformation__{Mobile,Home,Work,Other,Preferred}PhoneElem`, each with a
+  matching `…Label`. Labels rendered: `Phone`, `Mobile Phone`, `Home Phone`,
+  `Work Phone`.
+  **Structure:** the `…Elem` container always exists. When a number is present its
+  value sits in a child `<a>`; when absent the container is EMPTY. So reading the
+  container's text yields the number or `""` — an absent field is distinguishable
+  from a mismatched one without guessing.
+  ⚠️ `PatientInformation__MobilePhoneElem` appears **twice** in the DOM (duplicate
+  id — invalid markup, but real). `querySelector` sees only the first; iterate all
+  matches.
+  The survey-attach verification checks **mobile and home**, passing on either.
+  Work/Other/Preferred are deliberately excluded — each extra field widens what can
+  satisfy the phone test.
 - **No patient identifier in any header element** — the id lives only in the URL
   and in the Patients-page result anchors.
 - **The clinician costs an extra tab load**, so a verification that needs it

@@ -32,6 +32,7 @@ DOB_PADDED = "01/02/1990"       # what the survey/payload carries
 DOB_SHORT = "1/2/1990"          # what the chart renders (8 chars, unpadded)
 PHONE_IN = "(505) 555-0142"
 PHONE_CHART = "505-555-0142"
+HOME_CHART = "505-555-0777"
 CLINICIAN = "Zzamanda Zzdavison"
 OTHER_CLIN = "Zzother Zzclinician"
 
@@ -53,12 +54,20 @@ def results_page(rows):
 
 
 def chart_page(name=f"{FIRST} {LAST}", dob=DOB_SHORT, phone=PHONE_CHART,
-               clinicians=(CLINICIAN,), omit=None, tab_broken=False):
+               home_phone="", clinicians=(CLINICIAN,), omit=None, tab_broken=False):
     omit = omit or set()
     name_el = "" if "name" in omit else f'<div id="PatientInformation__PatientName">{name}</div>'
     dob_el = "" if "dob" in omit else f'<span id="PatientInformation__DOBElem">{dob}</span>'
-    ph_el = "" if "phone" in omit else (
-        f'<div id="PatientInformation__MobilePhoneElem"><a href="tel:x">{phone}</a></div>')
+    # Verified structure: the container always EXISTS; a present number sits in an
+    # <a> inside it, an absent one leaves it empty.
+    def phone_div(elem_id, value):
+        inner = f'<a href="tel:x">{value}</a>' if value else ""
+        return f'<div id="{elem_id}">{inner}</div>'
+    if "phone" in omit:
+        ph_el = ""                      # container gone entirely = unreadable
+    else:
+        ph_el = (phone_div("PatientInformation__MobilePhoneElem", phone)
+                 + phone_div("PatientInformation__HomePhoneElem", home_phone))
     entries = "".join(f'<div class="clinician-assignment"><a href="#">{c}</a></div>'
                       for c in clinicians)
     tab = "" if tab_broken else '<a href="#tab=Clinicians" id="clintab">Clinicians</a>'
@@ -252,6 +261,50 @@ async def main():
                    " ".join(l.message for l in ex._logs)
             for tok in (FIRST, LAST, DOB_PADDED, DOB_SHORT, PHONE_IN, PHONE_CHART, CLINICIAN):
                 r.check(f"'{tok}' absent", tok not in blob, blob[:180])
+            await page.close()
+
+            print("\n[O] Phone: a match against EITHER mobile or home passes")
+            for label, kw, survey_phone, expect in [
+                ("survey=mobile, both present", dict(phone=PHONE_CHART, home_phone=HOME_CHART),
+                 PHONE_CHART, True),
+                ("survey=HOME, both present",   dict(phone=PHONE_CHART, home_phone=HOME_CHART),
+                 HOME_CHART, True),
+                ("survey=mobile, home ABSENT",  dict(phone=PHONE_CHART, home_phone=""),
+                 PHONE_CHART, True),
+                ("survey=HOME, mobile ABSENT",  dict(phone="", home_phone=HOME_CHART),
+                 HOME_CHART, True),
+                ("survey matches neither",      dict(phone=PHONE_CHART, home_phone=HOME_CHART),
+                 "505-555-0999", False),
+            ]:
+                ex, page, ok = await run_verify(
+                    browser, chart_page(**kw), make_input(phone=survey_phone))
+                r.check(f"{label} -> {'passes' if expect else 'refuses'}", ok is expect,
+                        ex._pending.get("reason") or ex._pending.get("message", ""))
+                if not expect:
+                    r.check(f"{label}: reason is phone_mismatch",
+                            ex._pending.get("reason") == "phone_mismatch", ex._pending.get("reason"))
+                await page.close()
+
+            print("\n[P] Absent is NOT a mismatch; but BOTH absent cannot be verified")
+            ex, page, ok = await run_verify(
+                browser, chart_page(phone="", home_phone=""), make_input())
+            r.check("both empty refuses", ok is False)
+            r.check("reason is field_unreadable (not phone_mismatch)",
+                    ex._pending.get("reason") == "field_unreadable", ex._pending.get("reason"))
+            r.check("message says neither number could be read",
+                    "neither mobile nor" in ex._pending.get("message", ""),
+                    ex._pending.get("message", "")[:120])
+            await page.close()
+
+            print("\n[Q] Duplicate MobilePhoneElem id — every match is read, not just the first")
+            dup = chart_page(phone="", home_phone="").replace(
+                '<div id="PatientInformation__HomePhoneElem"></div>',
+                '<div id="PatientInformation__MobilePhoneElem"></div>'
+                f'<div id="PatientInformation__MobilePhoneElem"><a href="tel:x">{PHONE_CHART}</a></div>'
+                '<div id="PatientInformation__HomePhoneElem"></div>')
+            ex, page, ok = await run_verify(browser, dup, make_input(phone=PHONE_CHART))
+            r.check("finds the value on the SECOND duplicate id", ok is True,
+                    ex._pending.get("message", ""))
             await page.close()
 
             print("\n[N] The search query is the SURNAME ALONE, not the full name")
