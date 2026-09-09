@@ -57,8 +57,18 @@ SELECTORS_ATTACH = {
                            "span[data-testid='patientheaderview-patientname-container'] span"],
     "chart_dob":          ["span#PatientInformation__DOBElem",
                            "span[data-testid='patientheaderview-dob-container']"],
-    "chart_mobile_phone": ["div#PatientInformation__MobilePhoneElem a",
-                           "span[data-testid='patientheaderview-phone-container'] a"],
+    # Phone: BOTH numbers are checked, and a match against either passes.
+    # Verified on the chart 2026-09-09 — every phone id present is
+    # PatientInformation__{Mobile,Home,Work,Other,Preferred}PhoneElem. When a
+    # number is present its value sits in an <a> inside the container; when it is
+    # absent the container EXISTS but is EMPTY. So reading the container's text
+    # yields the number or "", and an absent field simply contributes nothing.
+    #
+    # Work/Other/Preferred also exist and are deliberately NOT checked: each extra
+    # field widens what can satisfy the phone test, and a therapy intake gives a
+    # mobile or a home number.
+    "chart_phone_fields": ["div#PatientInformation__MobilePhoneElem",
+                           "div#PatientInformation__HomePhoneElem"],
     # Chart, one hash-tab click away:
     "chart_clinicians_tab": ["a[href='#tab=Clinicians']"],
     "chart_clinicians":     [".clinician-assignments .clinician-assignment a"],
@@ -160,6 +170,34 @@ class SurveyAttachExecutor:
         except Exception:
             return None
         return txt or None
+
+    async def _collect_phone_digits(self) -> set:
+        """
+        Last-10 digits of every number the chart shows in a VERIFIED phone
+        container. An empty container contributes nothing, so a patient who has
+        one number and not the other can never fail on the missing one — absent
+        is not a mismatch.
+
+        Iterates every element matching each selector, not just the first: the
+        chart carries a DUPLICATE PatientInformation__MobilePhoneElem id (invalid
+        markup, but real), and querySelector would silently see only one of them.
+        """
+        found = set()
+        for sel in SELECTORS_ATTACH["chart_phone_fields"]:
+            try:
+                loc = self._page.locator(sel)
+                n = await loc.count()
+            except Exception:
+                continue
+            for i in range(n):
+                try:
+                    txt = (await loc.nth(i).inner_text(timeout=2000) or "").strip()
+                except Exception:
+                    continue
+                d = _digits(txt)
+                if len(d) >= 10:
+                    found.add(d[-10:])
+        return found
 
     # ------------------------------------------------------------------
     # Phases
@@ -353,14 +391,22 @@ class SurveyAttachExecutor:
             return self._refuse(phase, "dob_mismatch",
                                 "The date of birth on the chart does not match the survey", t0)
 
-        # --- phone (MOBILE only — see the note in the module docstring) ---
-        chart_phone = await self._read_text("chart_mobile_phone")
-        if chart_phone is None:
-            return self._refuse(phase, "field_unreadable",
-                                "Mobile phone could not be read from the chart", t0)
-        if _digits(chart_phone)[-10:] != _digits(data.phone)[-10:]:
-            return self._refuse(phase, "phone_mismatch",
-                                "The mobile number on the chart does not match the survey", t0)
+        # --- phone: mobile OR home -------------------------------------
+        # Matching either is deliberate. Only the mobile was mapped before, so a
+        # survey carrying a home number refused — safe, but wrong, and staff hit
+        # it. An empty field contributes nothing to the set below, so having one
+        # number and not the other cannot fail.
+        chart_phones = await self._collect_phone_digits()
+        if not chart_phones:
+            return self._refuse(
+                phase, "field_unreadable",
+                "No phone number could be read from the chart (neither mobile nor "
+                "home), so the survey's number cannot be checked against it", t0)
+        if _digits(data.phone)[-10:] not in chart_phones:
+            return self._refuse(
+                phase, "phone_mismatch",
+                f"The phone number on the survey matches neither number on the "
+                f"chart ({len(chart_phones)} number(s) present)", t0)
 
         # --- clinician: membership, behind a tab -------------------------
         tab = await self._first("chart_clinicians_tab")
