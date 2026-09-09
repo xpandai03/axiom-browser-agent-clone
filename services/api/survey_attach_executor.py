@@ -167,15 +167,25 @@ class SurveyAttachExecutor:
 
     async def _phase_search(self, data: SurveyAttachInput) -> bool:
         """
-        Search the Patients page by NAME.
+        Search the Patients page by SURNAME ALONE.
 
-        Why name and not phone: the field accepts "Name, Acct #, Phone, or Ins
-        ID", and phone would be narrower — but the shape TherapyNotes stores a
-        number in is unknown, so a digit-string query could return nothing for a
-        patient who is present. Name is the query most likely to CONTAIN the
-        target; the search is fuzzy, so its results are candidates, not answers,
-        and narrowing happens next against the date of birth the result row
-        carries.
+        Not the full name, and this is empirical rather than a preference. A live
+        run searching "First Last" for a patient stored as "First Middle Last"
+        returned four rows, none of them the target; the same record is returned
+        by its surname alone. TherapyNotes' matching does not behave like a
+        substring test, and a more specific query is not a narrower one — it can
+        simply miss.
+
+        Not phone either: the field accepts "Name, Acct #, Phone, or Ins ID" and
+        phone would be narrower, but the shape TherapyNotes stores a number in is
+        unknown, so a digit-string query could return nothing for a patient who
+        is present.
+
+        So: cast the query wide enough to CONTAIN the target, then narrow
+        precisely. Narrowing (in _phase_select) still requires every name token —
+        first AND last — to be present in the row, plus an exact date-of-birth
+        match, so a broad query costs nothing in precision. It does return more
+        rows, which is what the truncation guard is for.
         """
         phase, t0 = SurveyAttachPhase.SEARCH, time.time()
         page = self._page
@@ -190,7 +200,7 @@ class SurveyAttachExecutor:
 
         await box.click()
         await box.fill("")
-        await box.fill(f"{data.first_name} {data.last_name}")
+        await box.fill(data.last_name)
         await btn.click()          # a SEARCH submit — not a save-family control
         await asyncio.sleep(3.5)
 
