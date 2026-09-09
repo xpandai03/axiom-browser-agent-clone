@@ -701,6 +701,26 @@ class TNExecutor:
     # Phase 4: Fill Required Fields (does NOT save)
     # ========================================================================
 
+    # Re-assert budget for a field cleared by a late-initialising component:
+    # the first fill plus two re-asserts.
+    #
+    # This is a RACE, not a slow field. On 4 September the same contact with the
+    # same data failed at a 174 ms form-load-to-fill gap and succeeded at 161 ms —
+    # the SLOWEST attempt failed and the FASTEST passed. So sleeping longer before
+    # the fill does not close it, and would slow every run for nothing.
+    #
+    # The mechanism: the form-load gate waits on
+    # #PatientInformationEditor__FirstNameInput, so that component is up before
+    # Phase 4 starts. AddressEditorView has no gate — when it initialises it can
+    # write its empty model over an already-typed value.
+    #
+    # One re-assert covers the single clear that was observed; the second covers a
+    # second initialisation pass without letting a genuinely dead field stall the
+    # run. Nothing is ever retried unless the read-back is EMPTY, so a field that
+    # holds its value costs exactly one attempt and no extra delay.
+    FILL_MAX_ATTEMPTS = 3
+    FILL_REASSERT_PAUSE_S = 0.25
+
     async def _phase_fill_required(self, patient: TNPatientInput) -> bool:
         """Fill required patient fields using verified DOM IDs. Does NOT click Save."""
         phase = TNPhase.FILL_FORM
@@ -712,19 +732,55 @@ class TNExecutor:
         try:
             page = self._page
 
-            # Helper: fill a field by exact locator, read back, confirm
-            async def fill_and_confirm(selector: str, value: str, label: str) -> bool:
+            # Helper: fill a field by exact locator, read back, confirm.
+            #
+            # `max_attempts > 1` re-asserts the value if the read-back comes back
+            # EMPTY — the signature of a component initialising after the fill and
+            # writing its blank model over what was typed. See FILL_MAX_ATTEMPTS.
+            async def fill_and_confirm(
+                selector: str, value: str, label: str, max_attempts: int = 1
+            ) -> bool:
                 loc = page.locator(selector)
                 if await loc.count() == 0:
+                    # Genuinely absent: fail now. Never burn re-asserts on a field
+                    # that is not on the page.
                     logger.error(f"[FILL] {label}: selector '{selector}' not found (count=0)")
                     return False
-                await loc.fill(value)
-                actual = await loc.input_value()
-                if actual != value:
-                    logger.warning(f"[FILL] {label}: mismatch — expected '{value}', got '{actual}'")
+                for attempt in range(1, max_attempts + 1):
+                    await loc.fill(value)
+                    actual = await loc.input_value()
+                    if actual == value:
+                        if attempt > 1:
+                            logger.info(
+                                f"[FILL] {label}: value held after re-assert "
+                                f"(attempt {attempt}/{max_attempts})"
+                            )
+                        logger.info(f"[FILL] {label}: '{value}' confirmed")
+                        return True
+                    if actual == "" and value != "":
+                        # THE RACE: the field was cleared after being filled.
+                        if attempt < max_attempts:
+                            logger.warning(
+                                f"[FILL] {label}: cleared after fill "
+                                f"(attempt {attempt}/{max_attempts}) — re-asserting"
+                            )
+                            await asyncio.sleep(self.FILL_REASSERT_PAUSE_S)
+                            continue
+                        logger.warning(
+                            f"[FILL] {label}: still empty after {max_attempts} "
+                            "attempts — giving up"
+                        )
+                        return False
+                    # A DIFFERENT, non-empty read-back is NOT this bug. The field
+                    # may reformat what is typed, or the selector may be pointing
+                    # at the wrong control — re-typing would just feed the same
+                    # value back into whatever it is. Fail now, exactly as before.
+                    logger.warning(
+                        f"[FILL] {label}: read-back differs from the value typed "
+                        "(non-empty) — not a clear-after-fill, failing"
+                    )
                     return False
-                logger.info(f"[FILL] {label}: '{value}' confirmed")
-                return True
+                return False
 
             # 1. First Name
             if not await fill_and_confirm(
@@ -747,10 +803,15 @@ class TNExecutor:
             ):
                 return await self._fail_phase(phase, "form_field_not_found", "Could not fill Date of Birth", phase_start)
 
-            # 4. Address 1
+            # 4. Address 1 — the FIRST field touched in AddressEditorView, which
+            # the form-load gate does not cover, so it is the one that absorbs the
+            # initialisation race. Zip and City belong to the same component but
+            # are filled after this succeeds, by which point the component has
+            # demonstrably initialised (it accepted and held a value).
             if not await fill_and_confirm(
                 "#AddressEditorView__Address1Input_PatientAddress",
                 patient.address, "Address 1",
+                max_attempts=self.FILL_MAX_ATTEMPTS,
             ):
                 return await self._fail_phase(phase, "form_field_not_found", "Could not fill Address 1", phase_start)
 
