@@ -263,6 +263,74 @@ class TNExecutor:
     # Phase 0: Entry
     # ========================================================================
 
+    # Longest page-text snippet written to a log line when entry fails. Matches
+    # the SAVE_PROBLEM_MAX_CHARS precedent: enough to identify a page, not enough
+    # to put a document in the logs.
+    ENTRY_PAGE_TEXT_MAX_CHARS = 400
+
+    async def _log_entry_page_state(self, why: str) -> None:
+        """
+        Record WHAT the browser actually landed on. FAILURE PATH ONLY.
+
+        _phase_login has logged its post-submit URL and title since it was
+        written; _phase_entry logged nothing between announcing the phase and
+        timing out. So on 11 September four runs said only that a field had not
+        rendered — never whether the page was a maintenance notice, a bot
+        challenge, or a redirect somewhere else entirely. This closes that
+        asymmetry and nothing else: no selector, poll count or timeout changes.
+
+        Never raises. A diagnostic that can break the phase it is diagnosing is
+        worse than no diagnostic, so every read is guarded and failure to read is
+        itself logged.
+
+        PHI: entry runs BEFORE authentication, so nothing reachable here is a
+        patient record.
+        """
+        try:
+            url = self._page.url
+        except Exception:
+            url = "<unreadable>"
+        try:
+            title = await self._page.title()
+        except Exception:
+            title = "<unreadable>"
+        logger.warning(f'[ENTRY] {why} — landed on {url} | title: "{title}"')
+
+        # What the page actually says. This is the line that names the cause.
+        try:
+            text = await self._page.evaluate(
+                "() => (document.body ? (document.body.innerText || '') : '')"
+                ".replace(/\\s+/g, ' ').trim()"
+            )
+        except Exception:
+            text = None
+        if text is None:
+            logger.warning("[ENTRY] Page text could not be read")
+        elif not text:
+            # A finding in its own right: a body that renders nothing is a blank
+            # or script-only response, not a login form.
+            logger.warning("[ENTRY] Page rendered NO visible text at all")
+        else:
+            cap = self.ENTRY_PAGE_TEXT_MAX_CHARS
+            logger.warning(
+                f'[ENTRY] Page text ({len(text)} chars): '
+                f'"{text[:cap]}{"…" if len(text) > cap else ""}"'
+            )
+
+        # Separates "wrong page entirely" from "right page, markup changed":
+        # zero inputs means the login form is not there at all, whereas inputs
+        # present but unmatched would mean the selectors need revisiting.
+        try:
+            census = await self._page.evaluate(
+                "() => ({inputs: document.querySelectorAll('input').length,"
+                " textInputs: document.querySelectorAll('input[type=text], input:not([type])').length,"
+                " forms: document.querySelectorAll('form').length,"
+                " iframes: document.querySelectorAll('iframe').length})"
+            )
+            logger.warning(f"[ENTRY] Element census: {census}")
+        except Exception:
+            logger.warning("[ENTRY] Element census could not be read")
+
     async def _phase_entry(self) -> bool:
         """Navigate directly to TN login SPA, fill practice code."""
         phase = TNPhase.ENTRY
@@ -290,15 +358,18 @@ class TNExecutor:
             if not practice_field_ready:
                 # Capture what the browser actually sees
                 await self._capture_screenshot("entry_no_practice_field")
+                await self._log_entry_page_state("practice-code field never rendered")
                 return await self._fail_phase(
                     phase, "selector_not_found",
-                    "Practice code field did not render on /app/login/",
+                    "Could not reach the TherapyNotes login page — the "
+                    "practice-code field never appeared on /app/login/",
                     phase_start,
                 )
 
             # Fill practice code
             practice_field = await self._resolve_selector("practice_code_field")
             if not practice_field:
+                await self._log_entry_page_state("practice-code field vanished between poll and resolve")
                 return await self._fail_phase(
                     phase, "selector_not_found",
                     "Practice code field found by poll but not by resolve",
@@ -309,6 +380,7 @@ class TNExecutor:
             # Submit practice code
             submit = await self._resolve_selector("practice_code_submit")
             if not submit:
+                await self._log_entry_page_state("practice-code submit button not found")
                 return await self._fail_phase(
                     phase, "selector_not_found",
                     "Practice code submit button not found",
