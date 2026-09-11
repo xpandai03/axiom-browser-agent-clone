@@ -79,6 +79,38 @@ def _get_config():
     return _cached_config
 
 
+def _real_chrome_user_agent(browser):
+    """
+    The UA the RUNNING browser should present.
+
+    Two things are wrong with a hardcoded string, and this fixes both:
+
+    1. It rots. The literal here was "Chrome/131.0.0.0" beside a comment saying
+       131 was "modern enough to avoid version-based detection" — true when
+       written, twelve major versions before the Chromium that now ships. On
+       11 September TherapyNotes' login SPA stopped rendering for this agent
+       while a real browser worked, and a stale version claim is the only
+       difference TherapyNotes can see.
+
+    2. Playwright's own default cannot simply be used instead: it reports
+       "HeadlessChrome/<version>", which announces automation outright.
+
+    So take the version from the LIVE browser object and present it as Chrome.
+    Nothing here needs editing when Chromium is upgraded. Returns None if the
+    version cannot be read — a cosmetic string must never block a launch.
+    """
+    try:
+        version = (browser.version or "").strip()
+    except Exception:
+        version = ""
+    if not version:
+        return None
+    return (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{version} Safari/537.36"
+    )
+
+
 class PlaywrightRuntime:
     """
     Playwright runtime for browser automation.
@@ -182,7 +214,15 @@ class PlaywrightRuntime:
         else:
             logger.error("NO PROXY ATTACHED - Browser launching with DIRECT CONNECTION!")
 
-        logger.info(f"Launching browser: headless={self._headless}, proxy={'ATTACHED (auth embedded)' if proxy_config else 'NONE'}")
+        # Key off what is ACTUALLY in the launch arguments, not off whether a
+        # config was built. The old ternary tested `proxy_config`, so with
+        # skip_proxy=True it printed "ATTACHED" over a genuinely direct launch —
+        # a contradiction that cost an investigation a morning.
+        _proxy_attached = "proxy" in launch_kwargs
+        logger.info(
+            f"Launching browser: headless={self._headless}, "
+            f"proxy={'ATTACHED (auth embedded)' if _proxy_attached else 'NOT ATTACHED (direct)'}"
+        )
 
         # Retry once on launch failure (handles transient Railway container instability)
         try:
@@ -198,16 +238,14 @@ class PlaywrightRuntime:
         viewport_width = 1920 + random.randint(-50, 50)
         viewport_height = 1080 + random.randint(-30, 30)
 
-        # Use Linux UA to match actual navigator.platform on Railway (Linux)
-        # Chrome 131 is modern enough to avoid version-based detection
-        user_agent = (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
+        # Linux UA to match navigator.platform on Railway, with the version taken
+        # from the browser actually running. See _real_chrome_user_agent.
+        user_agent = _real_chrome_user_agent(self._browser)
 
         context_kwargs = {
             "viewport": {"width": viewport_width, "height": viewport_height},
-            "user_agent": user_agent,
+            # Omit rather than pass None if the version could not be read.
+            **({"user_agent": user_agent} if user_agent else {}),
             "locale": "en-US",
             "timezone_id": "America/New_York",
         }
@@ -464,14 +502,14 @@ class PlaywrightRuntime:
         viewport_width = 1920 + random.randint(-50, 50)
         viewport_height = 1080 + random.randint(-30, 30)
 
-        user_agent = (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        )
+        # Linux UA to match navigator.platform on Railway, with the version taken
+        # from the browser actually running. See _real_chrome_user_agent.
+        user_agent = _real_chrome_user_agent(self._browser)
 
         context_kwargs = {
             "viewport": {"width": viewport_width, "height": viewport_height},
-            "user_agent": user_agent,
+            # Omit rather than pass None if the version could not be read.
+            **({"user_agent": user_agent} if user_agent else {}),
             "locale": "en-US",
             "timezone_id": "America/New_York",
         }

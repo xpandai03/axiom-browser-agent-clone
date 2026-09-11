@@ -266,6 +266,95 @@ class TNExecutor:
     # Longest page-text snippet written to a log line when entry fails. Matches
     # the SAVE_PROBLEM_MAX_CHARS precedent: enough to identify a page, not enough
     # to put a document in the logs.
+    # Bounds on what the entry failure path will write. A handful of entries,
+    # each truncated: a full console dump in a log line is not diagnosis, it is
+    # how log volume becomes its own problem.
+    ENTRY_MAX_CONSOLE = 5
+    ENTRY_MAX_FAILED_REQUESTS = 5
+    ENTRY_EVENT_MAX_CHARS = 200
+
+    def _attach_entry_listeners(self) -> None:
+        """
+        Collect uncaught page errors and failed sub-resource requests.
+
+        These are the evidence the 11 September investigation could not get: a
+        page that returns the right document and renders nothing tells you only
+        that the SPA did not run, never WHY. A blocked script, a 404 on a
+        bundle, a CSP violation or a site's own unsupported-browser throw all
+        look identical from the outside and all look different here.
+
+        Buffers are bounded at capture time, so a page that errors in a loop
+        cannot grow them. Never raises.
+        """
+        self._entry_console: List[str] = []
+        self._entry_failed: List[str] = []
+
+        def _on_pageerror(err):
+            try:
+                if len(self._entry_console) < self.ENTRY_MAX_CONSOLE:
+                    self._entry_console.append(f"pageerror: {err}")
+            except Exception:
+                pass
+
+        def _on_console(msg):
+            try:
+                if msg.type == "error" and len(self._entry_console) < self.ENTRY_MAX_CONSOLE:
+                    self._entry_console.append(f"console.error: {msg.text}")
+            except Exception:
+                pass
+
+        def _on_requestfailed(req):
+            try:
+                if len(self._entry_failed) < self.ENTRY_MAX_FAILED_REQUESTS:
+                    why = (req.failure or "unknown")
+                    self._entry_failed.append(f"{req.resource_type} {req.url} — {why}")
+            except Exception:
+                pass
+
+        try:
+            self._page.on("pageerror", _on_pageerror)
+            self._page.on("console", _on_console)
+            self._page.on("requestfailed", _on_requestfailed)
+        except Exception as e:
+            logger.warning(f"[ENTRY] Could not attach page listeners: {e}")
+
+    def _redact_entry_event(self, text: str) -> str:
+        """
+        Bound an event string and strip the patient's own name from it.
+
+        A pre-auth login page carries no patient data, but a console error can
+        contain arbitrary strings and this run knows exactly one identifier it
+        must never emit — so remove it explicitly rather than assume.
+        """
+        out = " ".join(str(text or "").split())
+        patient = getattr(self, "_patient", None)
+        if patient is not None:
+            for tok in _name_tokens(
+                f"{getattr(patient, 'first_name', '')} {getattr(patient, 'last_name', '')}"
+            ):
+                if len(tok) >= 2:
+                    out = re.sub(rf"\b{re.escape(tok)}\b", "[REDACTED]", out, flags=re.I)
+        cap = self.ENTRY_EVENT_MAX_CHARS
+        return out[:cap] + ("…" if len(out) > cap else "")
+
+    def _log_entry_events(self) -> None:
+        """Write the collected console errors and failed requests. Failure path only."""
+        console = getattr(self, "_entry_console", None)
+        failed = getattr(self, "_entry_failed", None)
+
+        if console:
+            for line in console:
+                logger.warning(f"[ENTRY] JS error: {self._redact_entry_event(line)}")
+        elif console is not None:
+            # A finding in its own right: the SPA did not crash, it never ran.
+            logger.warning("[ENTRY] No JS errors were emitted at all")
+
+        if failed:
+            for line in failed:
+                logger.warning(f"[ENTRY] Failed request: {self._redact_entry_event(line)}")
+        elif failed is not None:
+            logger.warning("[ENTRY] No sub-resource requests failed")
+
     ENTRY_PAGE_TEXT_MAX_CHARS = 400
 
     async def _log_entry_page_state(self, why: str) -> None:
@@ -331,6 +420,9 @@ class TNExecutor:
         except Exception:
             logger.warning("[ENTRY] Element census could not be read")
 
+        # What the page's own scripts said, if anything.
+        self._log_entry_events()
+
     async def _phase_entry(self) -> bool:
         """Navigate directly to TN login SPA, fill practice code."""
         phase = TNPhase.ENTRY
@@ -340,6 +432,11 @@ class TNExecutor:
         logger.info("=" * 70)
 
         try:
+            # Start collecting the two things that would name a non-rendering page:
+            # uncaught JS errors and sub-resource requests that failed. Collected
+            # always (cheap, bounded), LOGGED only on the failure path below.
+            self._attach_entry_listeners()
+
             # Go directly to the login SPA — skip homepage entirely
             await self._page.goto(
                 "https://www.therapynotes.com/app/login/",
