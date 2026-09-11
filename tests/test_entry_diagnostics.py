@@ -31,6 +31,16 @@ def blocked_page(title="Access Denied", text="Request blocked. Reference ID 1234
 
 NO_TITLE = "<html><body><h1>Scheduled maintenance. Back soon.</h1></body></html>"
 NO_TEXT = "<html><head><title>Nothing</title></head><body><script>var x=1;</script></body></html>"
+CONSOLE_ERR = """<html><head><title>Boom</title></head><body>
+  <script>throw new Error("SPA-BOOT-FAILED: unsupported browser");</script>
+</body></html>"""
+
+FAILED_REQ = """<html><head><title>Missing bundle</title></head><body>
+  <script src="https://127.0.0.1:9/nonexistent-bundle.js"></script>
+</body></html>"""
+
+CLEAN_PAGE = """<html><head><title>Fine</title></head><body><p>All good.</p></body></html>"""
+
 LOGIN_OK = """<html><head><title>Log In | TherapyNotes</title></head><body>
   <form><input id="PracticeCode" type="text"><button id="Continue__ContinueButton">Continue</button></form>
 </body></html>"""
@@ -163,6 +173,80 @@ async def main():
             await page.close()
 
             # ---------------------------------------------------------
+            print("\n[H] Console/pageerror capture — a page whose script throws")
+            page = await browser.new_page(viewport={"width": 1200, "height": 900})
+            ex = make_ex(page)
+            ex._attach_entry_listeners()
+            await page.set_content(CONSOLE_ERR)
+            await asyncio.sleep(0.6)
+            cap.lines.clear()
+            ex._log_entry_events()
+            joined = " | ".join(cap.lines)
+            r.check("the JS error is captured", "SPA-BOOT-FAILED" in joined, joined[:200])
+            r.check("labelled as a JS error", "[ENTRY] JS error:" in joined, joined[:200])
+            r.check("no-failed-requests stated when there are none",
+                    "No sub-resource requests failed" in joined, joined[:200])
+            await page.close()
+
+            print("\n[I] Failed sub-resource capture")
+            page = await browser.new_page(viewport={"width": 1200, "height": 900})
+            ex = make_ex(page)
+            ex._attach_entry_listeners()
+            await page.set_content(FAILED_REQ)
+            await asyncio.sleep(1.2)
+            cap.lines.clear()
+            ex._log_entry_events()
+            joined = " | ".join(cap.lines)
+            r.check("the failed request is captured",
+                    "Failed request:" in joined and "nonexistent-bundle" in joined, joined[:240])
+            r.check("it carries a reason", "—" in joined, joined[:240])
+            await page.close()
+
+            print("\n[J] Neither — both absences stated as findings")
+            page = await browser.new_page(viewport={"width": 1200, "height": 900})
+            ex = make_ex(page)
+            ex._attach_entry_listeners()
+            await page.set_content(CLEAN_PAGE)
+            await asyncio.sleep(0.4)
+            cap.lines.clear()
+            ex._log_entry_events()
+            joined = " | ".join(cap.lines)
+            r.check("says no JS errors were emitted", "No JS errors were emitted" in joined, joined[:200])
+            r.check("says no requests failed", "No sub-resource requests failed" in joined, joined[:200])
+            await page.close()
+
+            print("\n[K] Bounded, and the patient's name is redacted")
+            class FakePatient:
+                first_name, last_name = "Zzsentinelfirst", "Zzsentinellast"
+            page = await browser.new_page(viewport={"width": 1200, "height": 900})
+            ex = make_ex(page)
+            ex._patient = FakePatient()
+            ex._attach_entry_listeners()
+            long_msg = "Zzsentinelfirst Zzsentinellast " + ("X" * 5000)
+            await page.set_content(
+                f"<html><body><script>throw new Error({long_msg!r});</script></body></html>")
+            await asyncio.sleep(0.6)
+            cap.lines.clear()
+            ex._log_entry_events()
+            joined = " | ".join(cap.lines)
+            CAPN = TNExecutorV2.ENTRY_EVENT_MAX_CHARS
+            r.check(f"bounded to {CAPN} chars", all(len(l) < CAPN + 120 for l in cap.lines),
+                    max((len(l) for l in cap.lines), default=0))
+            r.check("patient first name redacted", "Zzsentinelfirst" not in joined, joined[:160])
+            r.check("patient last name redacted", "Zzsentinellast" not in joined, joined[:160])
+            await page.close()
+
+            print("\n[L] Buffers are bounded at capture time (error loop cannot grow them)")
+            page = await browser.new_page(viewport={"width": 1200, "height": 900})
+            ex = make_ex(page)
+            ex._attach_entry_listeners()
+            await page.set_content(
+                "<html><body><script>for(let i=0;i<50;i++){setTimeout(()=>{throw new Error('e'+i)},0)}</script></body></html>")
+            await asyncio.sleep(1.0)
+            r.check(f"console buffer capped at {TNExecutorV2.ENTRY_MAX_CONSOLE}",
+                    len(ex._entry_console) <= TNExecutorV2.ENTRY_MAX_CONSOLE, len(ex._entry_console))
+            await page.close()
+
             print("\n[G] V1 parity")
             ex, page = await diag(browser, blocked_page(), TNExecutor, cap=cap)
             joined = " | ".join(cap.lines)
