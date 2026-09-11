@@ -196,6 +196,15 @@ class PlaywrightRuntime:
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--disable-blink-features=AutomationControlled",
+            # Force HTTP/1.1. On 11 September TherapyNotes' edge began answering
+            # the login document normally and then refusing every subsequent
+            # stream on the same HTTP/2 connection —
+            # net::ERR_HTTP2_SERVER_REFUSED_STREAM on require.min.js,
+            # trustedtypes.js, purify.min.js, ajax.js and the stylesheet — so the
+            # shell rendered with nothing in it. A single HEAD request still
+            # returned 200 because it never multiplexed. HTTP/1.1 opens separate
+            # connections instead of streams and sidesteps the refusal.
+            "--disable-http2",
         ]
 
         # ========================================================================
@@ -276,7 +285,14 @@ class PlaywrightRuntime:
                 logger.info("Stealth mode applied")
 
         self._page.set_default_timeout(30000)
-        logger.info(f"Browser ready (viewport: {viewport_width}x{viewport_height}, UA: Linux Chrome 131)")
+        # Report the UA actually sent, not a literal. This line said
+        # "Linux Chrome 131" for as long as the hardcoded UA existed and kept
+        # saying it after the UA became derived — the same class of stale-log bug
+        # as the proxy line, and the same way to mislead the next investigation.
+        logger.info(
+            f"Browser ready (viewport: {viewport_width}x{viewport_height}, "
+            f"UA: {user_agent or 'Playwright default'})"
+        )
 
     # ========================================================================
     # STEP 1: OUTBOUND IP VERIFICATION (MANDATORY)
