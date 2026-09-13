@@ -176,6 +176,7 @@ def create_app() -> FastAPI:
         therapy_notes_router,
         therapy_notes_v2_router,
         survey_attach_router,
+        active_count_router,
         extract_router,
         proxy_sanity_router,
     )
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
     app.include_router(therapy_notes_router, prefix="/api")
     app.include_router(therapy_notes_v2_router, prefix="/api")
     app.include_router(survey_attach_router, prefix="/api")
+    app.include_router(active_count_router, prefix="/api")
     app.include_router(extract_router, prefix="/api")
     app.include_router(proxy_sanity_router, prefix="/api")
 

@@ -536,3 +536,164 @@ reused verbatim.
   and in the Patients-page result anchors.
 - **The clinician costs an extra tab load**, so a verification that needs it
   cannot be a single-page read.
+
+---
+
+# ✅ Recon: counting a provider's ACTIVE clients (2026-09-13) — VERIFIED
+
+Read-only. Standalone scripts (not `TNExecutor`, so the `[FILL]` value-logging leak could
+not fire), headless, no screenshots, **no chart opened, no result row ever clicked, no
+write of any kind**. Every patient value was matched and discarded *inside the browser*;
+only counts, ids and option metadata were returned to Python.
+
+## The headline: TherapyNotes displays a real total
+
+The Patients page renders a **running total above the results table**, and it reflects
+every filter applied. **The ten-row page cap is therefore irrelevant to counting** —
+read the total, never the rows.
+
+```
+"Displaying 1-20 of 936 active patients"
+"Displaying 1-20 of 47"          # with one clinician selected
+"Displaying 81-93 of 93 active patients with a birthday…"   # last page
+```
+
+> Note the phrase says **1-20** while `tr.Row` yields **10**. The two disagree: the table
+> renders ten `tr.Row` per page but the pager advances in twenties (page 2 → "21-34").
+> `tr.Row` evidently matches only every other row (alternating row classes). **This is
+> exactly why row counting must not be used** — it silently halves the answer.
+
+### The total element has no id or class — anchor on its container
+
+```
+"patients_total_container": ["div#DivPatientsList"]       # STABLE
+# ancestry, innermost first:
+#   [0] <span>  id=None class=None      <- the text lives here
+#   [1] <div>   id=None class=None
+#   [2] <div>   id='DivPatientsList'
+#   [3] <div>   id='DivPatientsListWrap' class='tn-content-bubble last'
+#   [4] <main>  id='Body'
+```
+Read `#DivPatientsList` innerText and extract with
+`/Displaying\s+[\d,]+\s*[-–]\s*[\d,]+\s+of\s+([\d,]+)/i`. The capture group is digits
+only — **no patient value is in the matched phrase**.
+
+## The two dropdowns
+
+### Filter ("activity") — `DropDownListSearchActivity`
+```
+"patients_activity_filter": ["select#ctl00_BodyContent_DropDownListSearchActivity"]
+# name="ctl00$BodyContent$DropDownListSearchActivity"  class="search-filter-dropdown patients"
+```
+**Defaults to `active`, not "Any".** All 8 options verbatim:
+
+| value | label |
+|---|---|
+| `any` | Any |
+| `active` | **Active** |
+| `inactive` | Inactive |
+| `needsDataEntry` | Need Information Entered |
+| `aptComingWeek` | Appointment in Next Week |
+| `intComingWeek` | Intake in Next Week |
+| `patientsWithFirstAppointmentInLast30Days` | First Appt in Last 30 Days |
+| `birthday` | Upcoming Birthday |
+
+### Assigned to — `DropDownListSearchAssignment`
+```
+"patients_clinician_filter": ["select#ctl00_BodyContent_DropDownListSearchAssignment"]
+# name="ctl00$BodyContent$DropDownListSearchAssignment"
+```
+33 options: `any` ("Any Clinician"), `clinician-none` ("No Assigned Clinician"), and
+**31 named entries** valued `clinician-<6–7 digit id>` (one is an admin account, so 30
+real clinicians). The roster is **deliberately not transcribed here** — it changes, and
+hardcoding it would rot. Enumerate the `<option>` list at runtime and map by label.
+
+## ⚠️ Mechanics: the query does NOT run on select alone
+
+Setting a dropdown to a value it **already holds** fires no change event, so no postback
+occurs and the page keeps showing its unsubmitted state (**0 rows, no total**). A recon
+pass that omitted the submit read zeros and would have reported "no total exists".
+
+**Always click Search after setting the filters:**
+```
+"patients_search_submit": ["input#ctl00_BodyContent_ButtonSearch"]
+```
+
+## Measured counts (2026-09-13)
+
+| Query | Displayed total |
+|---|---|
+| Any | **1855** |
+| Active | **936** |
+| Inactive | **919** |
+| Active + No Assigned Clinician | 34 |
+| Active + named clinician A | 47 |
+| Active + named clinician B | 48 |
+| Active + named clinician C | 43 |
+
+**Active + Inactive = 936 + 919 = 1855 = Any**, exactly. Active/Inactive is a clean
+binary partition of the whole patient population — no third state, nothing uncounted.
+
+## ⚠️ "Active" is a stored flag, not the practice's 30-day rule
+
+TherapyNotes' Active/Inactive is a **status on the record**. The practice's definition —
+discharged after 30 days without a session — is a policy someone must apply by marking
+the record inactive. No dropdown option expresses "seen in the last N days"
+(`patientsWithFirstAppointmentInLast30Days` is the **first** appointment, not the last).
+
+**Consequence:** the number the agent can read equals the practice's definition only to
+the degree staff keep the flag current. This must be stated wherever the figure is
+reported.
+
+## ⚠️ Per-provider counts may not sum to 936
+
+34 unassigned + 30 clinicians summing to 936 implies a mean of ~30 per clinician, but all
+three sampled clinicians returned 43–48. Either the sample is unrepresentative or
+**a patient can be assigned to more than one clinician**, in which case per-provider
+counts overlap and will not reconcile to the practice total. Unresolved — closing it
+needs a full roster sweep, which the recon guardrails forbade.
+
+## Test Anna — one record, and it IS inside the active count
+
+Matched in-browser on the name cell; only counts were returned.
+
+| Query | Exact `Test Anna` rows |
+|---|---|
+| search "Test Anna", filter `active` | **1** |
+| search "Test Anna", filter `any` | **1** |
+
+Exactly one record, and it appears under `active`, so it **is** included in the 936 and in
+exactly one provider's count. Subtracting it is a simple `-1`, but only from the one
+provider it is assigned to — **which provider was not determined** (the row's trailing
+cell is a numeric column, not the clinician).
+
+> The free-text search is an **OR over tokens**: "Test Anna" returned 22 active / 70 any
+> rows. Do not treat a search row count as a match count.
+
+## 🔴 Consequence for shipped code — `tr.Row` sees only HALF the results
+
+The arithmetic is consistent across every query measured:
+
+| Items on the page (from the total phrase) | `tr.Row` count |
+|---|---|
+| 20 (`1-20 of 936`) | 10 |
+| 14 (`21-34 of 34`) | 7 |
+| 13 (`81-93 of 93`) | 7 |
+
+The table paginates in **twenties**, and `#PatientSearchTableList tr.Row` matches only
+the odd-indexed rows — the alternating half. `ceil(13/2)=7`, `floor(14/2)=7`, `20/2=10`.
+
+**This corrects the 2026-09-09 entry above**, which measured "10 rows, therefore the table
+caps at ten". The table does not cap at ten; it shows twenty and the selector sees ten.
+That entry also recorded a `"20 of 24"` string and dismissed it as noise — it was the
+result total (`Displaying 1-20 of 24`), misread.
+
+**Affected:** `services/api/survey_attach_executor.py:53`
+(`"patients_page_result_row": ["#PatientSearchTableList tr.Row"]`), whose match runs over
+those rows, and whose `RESULT_CAP_SUSPECT = 10` (line 111) was derived from the same
+mistaken measurement.
+
+The risk is **a patient sitting on an even-indexed row is invisible to the matcher** —
+either a false refusal, or a "unique match" that is only unique among the half that was
+searched. **Flagged, not fixed** — this recon is read-only. Closing it needs the true row
+class enumerated (likely `tr.AltRow`) and the matcher widened to both.
