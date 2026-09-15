@@ -31,10 +31,13 @@ async def attach_survey_to_chart(request: SurveyAttachInput):
     undone, whereas a refusal costs a staff member a manual upload.
     """
     try:
-        # Correlation ids only — no patient values in this line.
+        # Correlation ids only — no patient values in this line. Whether a chart
+        # id was supplied is logged; the id itself is not, because it names one
+        # patient's record as directly as a name would.
         logger.info(
             f"[ATTACH] request run_id={request.run_id} contact_id={request.contact_id} "
-            f"document='{request.document_name}'"
+            f"document='{request.document_name}' "
+            f"expected_chart={'yes' if request.expected_chart_id else 'no'}"
         )
 
         # Lazy import so Playwright is not loaded at startup.
@@ -49,12 +52,14 @@ async def attach_survey_to_chart(request: SurveyAttachInput):
 
         if result.status == "success":
             logger.info(
-                f"[ATTACH] attached '{result.document_name}' | url={result.tn_patient_url}"
+                f"[ATTACH] attached '{result.document_name}' | url={result.tn_patient_url} "
+                f"| selected_by={result.selection_mode}"
             )
         else:
             logger.warning(
                 f"[ATTACH] refused at {result.failed_phase}: "
-                f"{result.failure_reason} — {result.message}"
+                f"{result.failure_reason} — {result.message} "
+                f"| selected_by={result.selection_mode}"
             )
         return result
 

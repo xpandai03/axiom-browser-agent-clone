@@ -36,6 +36,7 @@ SurveyAttachFailureReason = Literal[
     "patient_not_found",           # zero results
     "multiple_candidates",         # >1 survives narrowing
     "result_set_possibly_truncated",  # too many rows to trust the set is complete
+    "expected_chart_not_in_results",  # the CRM named a chart the search did not surface
     "chart_not_opened",            # click did not land on a patient record
     "field_unreadable",            # a verification field could not be read at all
     "name_mismatch",
@@ -79,6 +80,25 @@ class SurveyAttachInput(BaseModel):
         ),
     )
 
+    expected_chart_id: Optional[str] = Field(
+        None,
+        max_length=64,
+        description=(
+            "The TherapyNotes chart id the CRM believes this survey belongs to, "
+            "when it knows one. OPTIONAL, and absent is an ordinary case: a "
+            "survey attached before matching ran, or one matched to a CRM "
+            "contact that carries no chart id, arrives without it and is "
+            "selected by name exactly as before.\n\n"
+            "When PRESENT it decides WHICH record to open — the row whose link "
+            "carries this id is opened regardless of how many rows came back, "
+            "and if no row carries it the run refuses rather than falling back "
+            "to name selection. It does NOT decide whether to attach: the "
+            "four-field verification against the chart runs identically either "
+            "way. An id says which chart; verification says whether it is the "
+            "right person."
+        ),
+    )
+
     pdf_url: str = Field(..., description="HTTP(S) URL of the survey PDF to attach.")
     document_name: str = Field(
         ...,
@@ -91,6 +111,19 @@ class SurveyAttachInput(BaseModel):
     contact_id: Optional[int] = None
     run_id: Optional[str] = None
     callback_url: Optional[str] = None
+
+    @field_validator("expected_chart_id")
+    @classmethod
+    def _blank_is_absent(cls, v):
+        """
+        "" and "   " mean the CRM had nothing, not that it wants a chart named
+        by the empty string. Collapsing them here means no downstream check has
+        to ask which kind of empty it is.
+        """
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
     @field_validator("pdf_url")
     @classmethod
@@ -126,28 +159,37 @@ class SurveyAttachOutput(BaseModel):
     message: str = ""
     tn_patient_url: Optional[str] = None
     document_name: Optional[str] = None
+    # How the record was chosen: "chart_id" when the CRM named one and the
+    # search surfaced it, "name" for the name-and-date-of-birth narrowing.
+    # Recorded on success AND on failure, because the question it answers —
+    # "why did this refuse?" — is usually asked about a failure.
+    selection_mode: Optional[Literal["chart_id", "name"]] = None
     logs: List[SurveyAttachPhaseLog] = Field(default_factory=list)
     duration_ms: int = 0
 
     @classmethod
-    def success_result(cls, *, tn_patient_url, document_name, logs, duration_ms):
+    def success_result(cls, *, tn_patient_url, document_name, logs, duration_ms,
+                       selection_mode=None):
         return cls(
             status="success",
             message=f"Attached '{document_name}' to the verified patient chart",
             tn_patient_url=tn_patient_url,
             document_name=document_name,
+            selection_mode=selection_mode,
             logs=logs,
             duration_ms=duration_ms,
         )
 
     @classmethod
-    def failure(cls, *, phase, reason, message, logs, duration_ms, tn_patient_url=None):
+    def failure(cls, *, phase, reason, message, logs, duration_ms, tn_patient_url=None,
+                selection_mode=None):
         return cls(
             status="error",
             failed_phase=phase,
             failure_reason=reason,
             message=message,
             tn_patient_url=tn_patient_url,
+            selection_mode=selection_mode,
             logs=logs,
             duration_ms=duration_ms,
         )

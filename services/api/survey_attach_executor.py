@@ -25,6 +25,7 @@ import re
 import time
 from typing import List, Optional
 
+from shared.patient_row_parsing import chart_id_from_href
 from shared.schemas.survey_attach import (
     SurveyAttachInput,
     SurveyAttachOutput,
@@ -149,6 +150,7 @@ class SurveyAttachExecutor:
             logs=self._logs,
             duration_ms=self._elapsed_ms(),
             tn_patient_url=tn_patient_url,
+            selection_mode=getattr(self, "_selection_mode", None),
         )
 
     async def _first(self, key: str):
@@ -272,6 +274,22 @@ class SurveyAttachExecutor:
             return self._refuse(phase, "patient_not_found",
                                 "No patient matched this name in TherapyNotes", t0)
 
+        # WHICH RECORD, WHEN THE CRM ALREADY KNOWS.
+        #
+        # Everything below this branch chooses a record by NAME, and refuses
+        # whenever name and date of birth cannot single one out — fifteen rows on
+        # a common surname, or two people genuinely sharing both. Those refusals
+        # are correct while the agent is guessing. They are unnecessary when it
+        # is not: a chart id names the record, so ambiguity is resolved by a fact
+        # and the truncation and multiple-candidate guards below have nothing
+        # left to protect against.
+        #
+        # It decides WHICH chart, never WHETHER to attach. _phase_verify runs
+        # identically on both paths.
+        self._selection_mode = "chart_id" if data.expected_chart_id else "name"
+        if data.expected_chart_id:
+            return await self._select_by_chart_id(data, t0)
+
         if total >= self.RESULT_CAP_SUSPECT:
             return self._refuse(
                 phase, "result_set_possibly_truncated",
@@ -362,6 +380,99 @@ class SurveyAttachExecutor:
 
         self._chart_url = self._page.url
         self._record(phase, "success", "Opened the single matching patient chart", t0)
+        return True
+
+    async def _select_by_chart_id(self, data: SurveyAttachInput, t0: float) -> bool:
+        """
+        Open the row whose link carries the chart id the CRM supplied.
+
+        NO FALLBACK. If the expected id is not among the results, this refuses
+        rather than reverting to name selection. The CRM believed a specific
+        record existed and the search did not surface it — the patient may have
+        been merged, discharged or renumbered — and that is a situation for a
+        person, not for a second guess. Falling back would also be the one way
+        this build could make things WORSE than yesterday: it would take a run
+        that had a precise expectation and quietly downgrade it to the guess the
+        expectation was meant to replace.
+
+        THE ID SPACE IS NOT ASSUMED TO MATCH. The hrefs are parsed with
+        chart_id_from_href — the same function the nightly active-patients pull
+        used to produce the ids the CRM stores — rather than with a second regex
+        written here that could drift from it.
+        """
+        phase = SurveyAttachPhase.SELECT
+        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_row"][0])
+        want = data.expected_chart_id
+        total = self._row_count
+
+        # Hrefs only. A record id is not a patient value, and nothing else about
+        # the rows crosses back into this process.
+        try:
+            hrefs = await rows.evaluate_all(
+                r"""
+                (rows) => rows.map(tr => {
+                  const a = tr.querySelector("a[data-testid='patient-search-patient-link']");
+                  return a ? (a.getAttribute('href') || "") : "";
+                })
+                """
+            )
+        except Exception as e:
+            return self._refuse(phase, "unknown_error",
+                                f"Could not evaluate search results: {str(e)[:120]}", t0)
+
+        matched = [i for i, h in enumerate(hrefs or []) if chart_id_from_href(h) == want]
+        logger.info(
+            f"[ATTACH] id-directed selection: {total} row(s) searched, "
+            f"{len(matched)} carrying the expected chart id"
+        )
+
+        if not matched:
+            # Truncation does not change the verdict, but it does change what a
+            # human should go and look at, so the message says which it was.
+            truncated = total >= self.RESULT_CAP_SUSPECT
+            extra = (
+                f" The search also filled the {self.RESULT_CAP_SUSPECT}-row page "
+                "the patient list pages at, so the record may simply be on a page "
+                "the agent cannot see."
+                if truncated else
+                " The search returned results, but none of them was that record."
+            )
+            return self._refuse(
+                phase, "expected_chart_not_in_results",
+                "The patient record the CRM expected did not appear in the "
+                "TherapyNotes search results. The patient may have been merged, "
+                "discharged or renumbered since the last nightly pull." + extra +
+                " Attach this document by hand after confirming which record is "
+                "correct.",
+                t0,
+            )
+
+        if len(matched) > 1:
+            # Two rows carrying the SAME id are two links to one record, so
+            # either opens the same chart and there is nothing to choose between
+            # them. Logged because it should not happen and a human may want to
+            # know the list rendered a duplicate.
+            logger.warning(
+                f"[ATTACH] the expected chart id appeared on {len(matched)} rows; "
+                "they address one record, opening it"
+            )
+
+        # Same click as the name path: charts cannot be deep-linked.
+        await self._page.click(
+            f"{SELECTORS_ATTACH['patients_page_result_row'][0]} "
+            f"{SELECTORS_ATTACH['patients_page_name_link'][0]}[href*='{want}']"
+        )
+        await asyncio.sleep(4)
+
+        landed = _RECORD_URL_RE.search(self._page.url or "")
+        if not landed or landed.group(1) != want:
+            return self._refuse(phase, "chart_not_opened",
+                                "Clicking the expected record did not land on that "
+                                "patient chart", t0)
+
+        self._chart_url = self._page.url
+        self._record(phase, "success",
+                     "Opened the patient chart the CRM identified by chart id", t0)
         return True
 
     async def _phase_verify(self, data: SurveyAttachInput) -> bool:
@@ -506,6 +617,7 @@ class SurveyAttachExecutor:
         self._pending = {}
         self._chart_url = None
         self._row_count = 0
+        self._selection_mode = None
 
         self._mech = TNExecutorV2(self._runtime, self._credentials)
         self._mech._start_time = self._start_time
@@ -533,6 +645,7 @@ class SurveyAttachExecutor:
         return SurveyAttachOutput.success_result(
             tn_patient_url=self._chart_url,
             document_name=data.document_name,
+            selection_mode=self._selection_mode,
             logs=self._logs,
             duration_ms=self._elapsed_ms(),
         )
