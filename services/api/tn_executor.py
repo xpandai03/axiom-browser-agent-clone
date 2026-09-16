@@ -151,6 +151,46 @@ class OverlayBlockedError(RuntimeError):
     """
 
 
+# PRE-EXISTING DEFECT, repaired here: this module calls _name_tokens in two
+# places (the clinician match and the save probe) but never defined or imported
+# it, so V1's save phase raised NameError at the probe on every run and the
+# blanket handler reported it as save_failed. It lives here rather than in V2
+# because V2 already imports from this module; the reverse would be circular.
+def _name_tokens(text: str) -> List[str]:
+    """Lowercase a name and split into alphanumeric tokens, dropping punctuation.
+
+    'Amanda Davison' -> ['amanda', 'davison']
+    'Davison, Amanda, LPC' -> ['davison', 'amanda', 'lpc']
+    Used for order-independent clinician matching (TN renders 'Last, First').
+    """
+    return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
+
+
+# ============================================================================
+# What makes a URL a patient RECORD
+# ============================================================================
+# A saved patient lives at /app/patients/edit/<opaque-id>/. The New Patient FORM
+# lives at /app/patients/edit/ — same prefix, no id. Distinguishing the two is
+# the whole save verdict, and it is also what the downstream upload guard needs:
+# that guard tested the URL for truthiness, and the bare form URL is a perfectly
+# truthy string, so a run that had saved nothing proceeded to look for a
+# Documents tab that could not exist.
+#
+# The id segment is OPAQUE (e.g. "vEG9AQAAAADFgVEW"), never numeric — which is
+# why the `(\d+)` extractor further down has never matched one. That extractor is
+# left alone here deliberately: it feeds tnPatientId to the CRM and changing what
+# the CRM receives is not part of this change.
+_RECORD_URL_RE = re.compile(r"/patients/(?:edit|view|detail)/([^/?#]+)")
+
+
+def record_id_from_url(url: Optional[str]) -> Optional[str]:
+    """The record segment of a patient URL, or None if the URL names no record."""
+    if not url:
+        return None
+    m = _RECORD_URL_RE.search(url)
+    return m.group(1) if m else None
+
+
 class TNExecutor:
     """
     Deterministic, linear executor for TherapyNotes patient creation.
@@ -907,8 +947,11 @@ class TNExecutor:
             # EMPTY — the signature of a component initialising after the fill and
             # writing its blank model over what was typed. See FILL_MAX_ATTEMPTS.
             async def fill_and_confirm(
-                selector: str, value: str, label: str, max_attempts: int = 1
+                selector: str, value: str, label: str, max_attempts: int = None
             ) -> bool:
+                # Every field gets the re-assert budget, not just Address 1.
+                if max_attempts is None:
+                    max_attempts = self.FILL_MAX_ATTEMPTS
                 loc = page.locator(selector)
                 if await loc.count() == 0:
                     # Genuinely absent: fail now. Never burn re-asserts on a field
@@ -924,7 +967,7 @@ class TNExecutor:
                                 f"[FILL] {label}: value held after re-assert "
                                 f"(attempt {attempt}/{max_attempts})"
                             )
-                        logger.info(f"[FILL] {label}: '{value}' confirmed")
+                        logger.info(f"[FILL] {label}: confirmed")
                         return True
                     if actual == "" and value != "":
                         # THE RACE: the field was cleared after being filled.
@@ -980,7 +1023,6 @@ class TNExecutor:
             if not await fill_and_confirm(
                 "#AddressEditorView__Address1Input_PatientAddress",
                 patient.address, "Address 1",
-                max_attempts=self.FILL_MAX_ATTEMPTS,
             ):
                 return await self._fail_phase(phase, "form_field_not_found", "Could not fill Address 1", phase_start)
 
@@ -988,22 +1030,40 @@ class TNExecutor:
             zip_loc = page.locator("#AddressEditorView__PostalCodeInput_PatientAddress")
             if await zip_loc.count() == 0:
                 return await self._fail_phase(phase, "form_field_not_found", "Zip field not found", phase_start)
-            await zip_loc.click()
-            await zip_loc.fill("")
-            await page.keyboard.type(patient.zip, delay=50)
-            try:
-                await page.wait_for_function(
-                    "(selector, expected) => document.querySelector(selector).value === expected",
-                    "#AddressEditorView__PostalCodeInput_PatientAddress",
-                    patient.zip,
-                    timeout=3000,
-                )
-            except Exception:
-                pass
-            actual_zip = await zip_loc.input_value()
+            async def _type_zip() -> str:
+                await zip_loc.click()
+                await zip_loc.fill("")
+                await page.keyboard.type(patient.zip, delay=50)
+                try:
+                    await page.wait_for_function(
+                        "(selector, expected) => document.querySelector(selector).value === expected",
+                        "#AddressEditorView__PostalCodeInput_PatientAddress",
+                        patient.zip,
+                        timeout=3000,
+                    )
+                except Exception:
+                    pass
+                return await zip_loc.input_value()
+
+            # Same attempt budget as every other field. V1 previously had none at
+            # all here, so a single clear-after-fill on the zip ended the run.
+            actual_zip = ""
+            for _attempt in range(1, self.FILL_MAX_ATTEMPTS + 1):
+                actual_zip = await _type_zip()
+                if actual_zip == patient.zip:
+                    break
+                if _attempt < self.FILL_MAX_ATTEMPTS:
+                    logger.warning(
+                        f"[FILL] Zip: read-back differed "
+                        f"(attempt {_attempt}/{self.FILL_MAX_ATTEMPTS}) — re-asserting"
+                    )
+                    await asyncio.sleep(self.FILL_REASSERT_PAUSE_S)
             if actual_zip != patient.zip:
-                return await self._fail_phase(phase, "form_field_not_found", f"Zip mismatch: '{actual_zip}' != '{patient.zip}'", phase_start)
-            logger.info(f"[FILL] Zip: '{patient.zip}' confirmed")
+                return await self._fail_phase(
+                    phase, "form_field_not_found",
+                    "Zip: read-back differs from the value typed", phase_start,
+                )
+            logger.info("[FILL] Zip: confirmed")
             await zip_loc.press("Tab")
             await page.wait_for_timeout(500)
             logger.info("[FILL] Zip: Tab pressed (blur)")
@@ -1018,7 +1078,7 @@ class TNExecutor:
             if not zip_ok:
                 return await self._fail_phase(phase, "zip_autocomplete_failed", "City did not auto-populate after zip", phase_start)
             city_val = await city_loc.input_value()
-            logger.info(f"[FILL] City auto-populated: '{city_val}'")
+            logger.info("[FILL] City: auto-populated from zip")
 
             # 6. Sex (radio) — use check(), fallback to click(force=True)
             sex_value = "0" if patient.sex == "Male" else "1"
@@ -1027,10 +1087,10 @@ class TNExecutor:
                 return await self._fail_phase(phase, "form_field_not_found", f"Sex radio value={sex_value} not found", phase_start)
             try:
                 await sex_loc.check()
-                logger.info(f"[FILL] Sex: {patient.sex} (value={sex_value}) selected via check()")
+                logger.info("[FILL] Sex: selected via check()")
             except Exception:
                 await sex_loc.click(force=True)
-                logger.info(f"[FILL] Sex: {patient.sex} (value={sex_value}) selected via click(force=True)")
+                logger.info("[FILL] Sex: selected via click(force=True)")
 
             # 7. Email
             if not await fill_and_confirm(
@@ -1073,6 +1133,11 @@ class TNExecutor:
 
     # Longest redacted block we will carry into a log line or the CRM.
     SAVE_PROBLEM_MAX_CHARS = 400
+
+    # Mirrors TNExecutorV2. The URL acquiring a record id is the only thing that
+    # ends this wait; no page content shortens it. See the V2 comment for why.
+    SAVE_RECORD_URL_TIMEOUT_MS = 15_000
+    SAVE_RECORD_URL_POLL_MS = 250
 
     # Single probe over the container set that has actually produced captures.
     # Returns BOTH:
@@ -1184,10 +1249,22 @@ class TNExecutor:
             logger.info("[SAVE] Save clicked")
 
             # Step 3: Wait for page response
-            await page.wait_for_timeout(2000)
+            # Wait for the URL to advance to a record path. This is the verdict.
+            _deadline = time.time() + (self.SAVE_RECORD_URL_TIMEOUT_MS / 1000.0)
+            _saved_id = None
+            while True:
+                _saved_id = record_id_from_url(page.url)
+                if _saved_id or time.time() >= _deadline:
+                    break
+                await page.wait_for_timeout(self.SAVE_RECORD_URL_POLL_MS)
+            _waited_ms = int((time.time() - phase_start) * 1000)
 
             url_after = page.url
             logger.info(f"[SAVE] URL after save: {url_after}")
+            logger.info(
+                f"[SAVE] Record URL {'reached' if _saved_id else 'NOT reached'} "
+                f"after {_waited_ms}ms"
+            )
 
             # Step 4: Check for validation errors
             validation_errors = await page.evaluate("""
@@ -1205,15 +1282,12 @@ class TNExecutor:
                 }
             """)
 
+            # CAPTURE ONLY — demoted from a verdict for the same reason as V2:
+            # the New Patient form carries a benign notice from page load, so a
+            # visible container says nothing about whether the save landed.
             if validation_errors:
                 for err in validation_errors:
-                    logger.warning(f"[SAVE] Validation error: {err}")
-                await self._capture_screenshot("save_validation_errors")
-                return await self._fail_phase(
-                    phase, "save_failed",
-                    f"Validation errors after save: {'; '.join(validation_errors)}",
-                    phase_start,
-                )
+                    logger.warning(f"[SAVE] Validation text on page: {err}")
 
             # Step 5: One probe over the containers that demonstrably work.
             #
@@ -1259,6 +1333,31 @@ class TNExecutor:
                     phase_start,
                 )
 
+            # THE VERDICT. After the duplicate decision, so duplicate handling is
+            # untouched. Name-on-page corroborates and never decides.
+            expected_name = f"{patient.first_name} {patient.last_name}"
+            name_on_page = await page.evaluate(
+                "(name) => document.body.innerText.includes(name)", expected_name,
+            )
+            logger.info(f"[SAVE] Patient name on page: {name_on_page}")
+
+            if not _saved_id:
+                detail = [
+                    f"URL never advanced past the New Patient form after "
+                    f"{_waited_ms}ms (still {url_after})",
+                    f"name on page: {name_on_page}",
+                ]
+                if getattr(self, "_save_problem_text", None):
+                    detail.append(f'TherapyNotes reported: "{self._save_problem_text}"')
+                if validation_errors:
+                    detail.append(f"validation text: {'; '.join(validation_errors)}")
+                await self._capture_screenshot("save_not_committed")
+                return await self._fail_phase(
+                    phase, "save_failed",
+                    "Save was not committed — " + " | ".join(detail),
+                    phase_start,
+                )
+
             # Step 6: Capture patient URL and extract ID
             self._tn_patient_url = page.url
             self._tn_patient_id = None
@@ -1276,14 +1375,6 @@ class TNExecutor:
 
             logger.info(f"[SAVE] tn_patient_url: {self._tn_patient_url}")
             logger.info(f"[SAVE] tn_patient_id: {self._tn_patient_id}")
-
-            # Step 7: Confirm patient name visible
-            expected_name = f"{patient.first_name} {patient.last_name}"
-            name_on_page = await page.evaluate(
-                "(name) => document.body.innerText.includes(name)",
-                expected_name,
-            )
-            logger.info(f"[SAVE] Patient name '{expected_name}' on page: {name_on_page}")
 
             await self._capture_screenshot("save_complete")
 
