@@ -23,8 +23,14 @@ import sys
 
 from playwright.async_api import async_playwright
 
-from services.api.survey_attach_executor import SurveyAttachExecutor, _digits
+from services.api.survey_attach_executor import (
+    SELECTORS_ATTACH,
+    SurveyAttachExecutor,
+    _digits,
+)
 from shared.schemas.survey_attach import SurveyAttachInput
+
+ANCHOR_SEL = SELECTORS_ATTACH["patients_page_result_anchor"][0]
 
 PID = "ZzTestChartId0001"
 FIRST, LAST = "Zzmary", "Zzwatson"
@@ -38,14 +44,32 @@ OTHER_CLIN = "Zzother Zzclinician"
 
 
 def results_page(rows):
-    """rows: list of (pid, name, dob_text)."""
-    trs = "".join(
-        f'<tr class="Row"><td></td>'
-        f'<td><a data-testid="patient-search-patient-link" href="/app/patients/edit/{p}/">{n}</a></td>'
-        f'<td><a data-testid="patient-search-dob-link" href="/app/patients/edit/{p}/">{d}</a></td>'
-        f"</tr>"
-        for p, n, d in rows
-    )
+    """
+    rows: list of (pid, name, dob_text) or (pid, name, dob_text, trailing_cells).
+
+    ROW CLASSES ALTERNATE, exactly as TherapyNotes renders them. This is the
+    whole point of the fixture: `#PatientSearchTableList tr.Row` matches only the
+    odd-indexed half, so a target on an EVEN row is invisible to anything that
+    iterates that selector. A fixture that gave every row class="Row" would have
+    passed while the shipped code could not find half the table — which is what
+    happened on 21 September.
+
+    `trailing_cells` is free text dropped into a further cell (the real table
+    carries Payer and Clinicians columns). It exists so a decoy row can carry the
+    survey's name tokens OUTSIDE the name cell.
+    """
+    trs = ""
+    for i, row in enumerate(rows):
+        p, n, d = row[0], row[1], row[2]
+        trailing = row[3] if len(row) > 3 else ""
+        cls = "Row" if i % 2 == 0 else "AlternateRow"
+        trs += (
+            f'<tr class="{cls}"><td></td>'
+            f'<td><a data-testid="patient-search-patient-link" href="/app/patients/edit/{p}/">{n}</a></td>'
+            f'<td><a data-testid="patient-search-dob-link" href="/app/patients/edit/{p}/">{d}</a></td>'
+            f"<td>{trailing}</td>"
+            f"</tr>"
+        )
     return f"""<html><body>
       <input id="ctl00_BodyContent_TextBoxSearchPatientName">
       <input type="submit" id="ctl00_BodyContent_ButtonSearch">
@@ -137,7 +161,8 @@ async def run_search_select(browser, rows, data):
     await page.route(f"{ORIGIN}/**", handler)
     await page.goto(f"{ORIGIN}/app/patients/")
     ex = make_ex(page)
-    ex._row_count = await page.locator("#PatientSearchTableList tr.Row").count()
+    # Counted the way _phase_search counts: by ANCHOR, never by tr.Row.
+    ex._row_count = await page.locator(ANCHOR_SEL).count()
     ok = await ex._phase_select(data)
     return ex, page, ok
 
@@ -233,9 +258,11 @@ async def main():
             await page.close()
 
             print("\n[J] A FULL page of results -> refuses WITHOUT opening a chart")
-            # Measured 2026-09-09: the Patients table pages at TEN rows.
+            # RE-MEASURED 2026-09-21: the Patients table pages at TWENTY. The old
+            # value of 10 was that page seen through tr.Row, i.e. half of it.
             CAP = SurveyAttachExecutor.RESULT_CAP_SUSPECT
-            r.check("threshold is the measured page size (10)", CAP == 10, CAP)
+            r.check("threshold is the true page size (20), not the halved one",
+                    CAP == 20, CAP)
             rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 0 else "1/1/1971")
                     for i in range(CAP)]
             ex, page, ok = await run_search_select(browser, rows, make_input())
@@ -335,6 +362,95 @@ async def main():
             print("\n[M] Phone comparison is on digits, shape-insensitive")
             for shape in ["(505) 555-0142", "505-555-0142", "5055550142", "+1 505 555 0142"]:
                 r.check(f"{shape!r} -> same digits", _digits(shape)[-10:] == "5055550142")
+
+            # ==============================================================
+            # THE 21 SEPTEMBER FAILURES. Two independent bugs, one symptom.
+            # ==============================================================
+
+            print("\n[R] NINE results, target on an EVEN row -> found (was invisible)")
+            # Nine rows with alternating classes: tr.Row matches five of them and
+            # the target sits on index 7, which is an AlternateRow. This is the
+            # shape of the live search that refused.
+            rows = [(f"Zzid{i}", f"{FIRST} {LAST}",
+                     DOB_SHORT if i == 7 else f"{(i % 12) + 1}/1/1971")
+                    for i in range(9)]
+            page_probe = await browser.new_page()
+            await page_probe.set_content(results_page(rows))
+            n_anchor = await page_probe.locator(ANCHOR_SEL).count()
+            n_trrow = await page_probe.locator("#PatientSearchTableList tr.Row").count()
+            await page_probe.close()
+            r.check("the fixture reproduces the halving: 9 anchors, 5 tr.Row",
+                    (n_anchor, n_trrow) == (9, 5), (n_anchor, n_trrow))
+            ex, page, ok = await run_search_select(browser, rows, make_input())
+            r.check("selection succeeded on an EVEN row", ok is True,
+                    ex._pending.get("message", ""))
+            r.check("opened the right chart (Zzid7)", "Zzid7" in (ex._chart_url or ""),
+                    ex._chart_url)
+            await page.close()
+
+            print("\n[R2] The same nine rows, id-directed -> also reaches an even row")
+            ex, page, ok = await run_search_select(
+                browser, rows, make_input(expected_chart_id="Zzid7"))
+            r.check("id-directed selection succeeded", ok is True,
+                    ex._pending.get("message", ""))
+            r.check("opened Zzid7", "Zzid7" in (ex._chart_url or ""), ex._chart_url)
+            r.check("recorded as chart_id selection", ex._selection_mode == "chart_id")
+            await page.close()
+
+            print("\n[S] Preferred (Legal) Last -> matches on the legal name")
+            # What TherapyNotes renders for a child the practice flags as a minor.
+            PREF = f"Minor ({FIRST}) {LAST}"
+            ex, page, ok = await run_search_select(
+                browser, [("Zzid1", PREF, DOB_SHORT)], make_input())
+            r.check("results-table name cell matches", ok is True,
+                    ex._pending.get("message", ""))
+            await page.close()
+            ex, page, ok = await run_verify(browser, chart_page(name=PREF), make_input())
+            r.check("chart header matches too", ok is True, ex._pending.get("message", ""))
+            await page.close()
+
+            print("\n[T] Name tokens OUTSIDE the name cell no longer match")
+            # A decoy whose own name is someone else, but whose clinician column
+            # carries the survey's name tokens. The old whole-row subset passed it.
+            decoy = ("Zzid9", "Zzother Zzperson", DOB_SHORT, f"{FIRST} {LAST}")
+            ex, page, ok = await run_search_select(browser, [decoy], make_input())
+            r.check("refused", ok is False)
+            r.check("reason is patient_not_found",
+                    ex._pending.get("reason") == "patient_not_found", ex._pending.get("reason"))
+            r.check("no chart opened", ex._chart_url is None)
+            await page.close()
+
+            print("\n[U] A hyphenated surname is a different person")
+            for where, kw in [("chart header", dict(name=f"{FIRST} {LAST}-Zzsmith"))]:
+                ex, page, ok = await run_verify(browser, chart_page(**kw), make_input())
+                r.check(f"{where}: refused", ok is False)
+                r.check(f"{where}: reason is name_mismatch",
+                        ex._pending.get("reason") == "name_mismatch", ex._pending.get("reason"))
+                await page.close()
+            ex, page, ok = await run_search_select(
+                browser, [("Zzid1", f"{FIRST} {LAST}-Zzsmith", DOB_SHORT)], make_input())
+            r.check("results table: refused", ok is False)
+            r.check("no chart opened", ex._chart_url is None)
+            await page.close()
+
+            print("\n[V] A middle name on the chart only -> now refuses (NEW)")
+            # Stated as a new refusal rather than discovered as one: the old
+            # subset test passed this, the CRM's matcher never did, and the two
+            # now agree. Staff see patient_not_found / name_mismatch.
+            ex, page, ok = await run_verify(
+                browser, chart_page(name=f"{FIRST} Zzmiddle {LAST}"), make_input())
+            r.check("chart header refuses on an untyped middle name", ok is False)
+            r.check("reason is name_mismatch",
+                    ex._pending.get("reason") == "name_mismatch", ex._pending.get("reason"))
+            await page.close()
+
+            print("\n[W] tr.Row is absent from the attach route")
+            src = open("services/api/survey_attach_executor.py", encoding="utf-8").read()
+            code = "\n".join(
+                l for l in src.splitlines() if not l.lstrip().startswith("#"))
+            r.check("no tr.Row in executable code", "tr.Row" not in code)
+            r.check("rows are located by the result anchor",
+                    "patient-search-patient-link" in ANCHOR_SEL)
 
             await browser.close()
     finally:

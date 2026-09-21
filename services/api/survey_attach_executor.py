@@ -25,6 +25,7 @@ import re
 import time
 from typing import List, Optional
 
+from shared.name_keys import names_agree
 from shared.patient_row_parsing import chart_id_from_href
 from shared.schemas.survey_attach import (
     SurveyAttachInput,
@@ -51,7 +52,22 @@ logger = logging.getLogger(__name__)
 SELECTORS_ATTACH = {
     "patients_page_search_input":  ["input#ctl00_BodyContent_TextBoxSearchPatientName"],
     "patients_page_search_submit": ["input#ctl00_BodyContent_ButtonSearch"],
-    "patients_page_result_row":    ["#PatientSearchTableList tr.Row"],
+    # ROWS ARE LOCATED BY THE RESULT ANCHOR, NEVER BY `tr.Row`.
+    #
+    # `#PatientSearchTableList tr.Row` matches only the ALTERNATING half of the
+    # table — recon measured 20 items against 10 `tr.Row`, 14 against 7, 13
+    # against 7 (docs/selectors/tn_v2_phases.md, "tr.Row sees only HALF the
+    # results"). On 21 September that cost a real attach: nine records came back
+    # for the surname, five were evaluated, and the target sat on an even row and
+    # was never looked at. The run refused with "No patient matched this name"
+    # against a table that was showing the patient.
+    #
+    # The nightly pull was rewritten anchor-first for exactly this reason
+    # (services/api/active_patients_executor.py:13). This route now matches it:
+    # every anchor is a row, and the <tr> is reached by walking UP from the
+    # anchor rather than by trusting a class that alternates.
+    "patients_page_result_anchor": [
+        "#PatientSearchTableList a[data-testid='patient-search-patient-link']"],
     "patients_page_name_link":     ["a[data-testid='patient-search-patient-link']"],
     # Chart, present on first load (no render delay observed):
     "chart_patient_name": ["div#PatientInformation__PatientName",
@@ -93,23 +109,23 @@ class SurveyAttachExecutor:
     # Result count at or above which the set is treated as TRUNCATED and refused
     # without opening any chart.
     #
-    # MEASURED 2026-09-09, not borrowed. Two searches on common surnames each
-    # returned exactly 10 tr.Row entries, and the page rendered explicit
-    # pagination alongside them — a[id=DynamicTablePagingLink] with "Page 1",
-    # "2", "›" and "»". So the Patients table pages at TEN rows, and a full first
-    # page means there are more results the agent cannot see.
+    # RE-MEASURED 2026-09-21 AGAINST THE FULL TABLE. The previous value, 10, was
+    # measured through `tr.Row` and was therefore half of a page: recon read the
+    # page's own total phrase as "Displaying 1-20 of 936" while `tr.Row` returned
+    # 10, and 14 items returned 7, and 13 returned 7. The table pages at TWENTY.
     #
-    # This previously held 15, imported from the appointment-dialog dropdown. That
-    # value was not merely imprecise, it was INERT: the table never returns more
-    # than 10 rows, so the guard could never fire, and the route would have
-    # narrowed within a truncated page and opened a chart — the exact failure the
-    # guard exists to prevent.
+    # Counting by anchor now sees all twenty, so the threshold has to be the real
+    # page size or the guard fires on a complete set of eleven and refuses work it
+    # should do. A live search on 2026-09-21 returned 9 anchors with no pager
+    # rendered — under the cap, correctly not refused.
     #
-    # At 10 the guard is deliberately conservative: a search returning exactly ten
-    # complete results also refuses, because a full page is indistinguishable from
-    # a truncated one on row count alone. The definitive signal is the presence of
-    # a pager, which is a better test and is noted as a follow-up.
-    RESULT_CAP_SUSPECT = 10
+    # At 20 the guard stays deliberately conservative: a search returning exactly
+    # twenty COMPLETE results also refuses, because a full page is
+    # indistinguishable from a truncated one on row count alone. The definitive
+    # signal is the pager (`a#DynamicTablePagingLink.Next`), which is a better
+    # test; it is logged beside the count here and remains a follow-up rather than
+    # a behaviour change bundled into this fix.
+    RESULT_CAP_SUSPECT = 20
 
     def __init__(self, runtime, credentials):
         self._runtime = runtime
@@ -227,10 +243,10 @@ class SurveyAttachExecutor:
         is present.
 
         So: cast the query wide enough to CONTAIN the target, then narrow
-        precisely. Narrowing (in _phase_select) still requires every name token —
-        first AND last — to be present in the row, plus an exact date-of-birth
-        match, so a broad query costs nothing in precision. It does return more
-        rows, which is what the truncation guard is for.
+        precisely. Narrowing (in _phase_select) still requires the result's NAME
+        CELL to agree with the survey name on a full reading, plus an exact
+        date-of-birth match, so a broad query costs nothing in precision. It does
+        return more rows, which is what the truncation guard is for.
         """
         phase, t0 = SurveyAttachPhase.SEARCH, time.time()
         page = self._page
@@ -249,12 +265,19 @@ class SurveyAttachExecutor:
         await btn.click()          # a SEARCH submit — not a save-family control
         await asyncio.sleep(3.5)
 
-        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_row"][0])
+        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_anchor"][0])
         try:
             count = await rows.count()
         except Exception:
             count = 0
-        logger.info(f"[ATTACH] search returned {count} row(s)")
+        # The pager is the definitive truncation signal and the row count is a
+        # proxy for it. Logged together so the two can be compared in the field
+        # before the guard is switched over to the pager.
+        try:
+            pager = await self._page.locator("a#DynamicTablePagingLink.Next").count() > 0
+        except Exception:
+            pager = False
+        logger.info(f"[ATTACH] search returned {count} row(s), pager={'yes' if pager else 'no'}")
         self._record(phase, "success", f"Search returned {count} row(s)", t0)
         self._row_count = count
         return True
@@ -267,7 +290,7 @@ class SurveyAttachExecutor:
         chart is opened in order to decide which chart to open.
         """
         phase, t0 = SurveyAttachPhase.SELECT, time.time()
-        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_row"][0])
+        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_anchor"][0])
         total = self._row_count
 
         if total == 0:
@@ -301,53 +324,81 @@ class SurveyAttachExecutor:
                 t0,
             )
 
-        # Match rows in the BROWSER; only indices come back, so no patient value
-        # enters this process.
+        # WHAT COMES BACK FROM THE BROWSER, AND WHY IT IS NOT A VERDICT.
+        #
+        # The browser returns three SCOPED strings per result — the name cell's
+        # own text, the date-of-birth cell's own text, and the href — and makes no
+        # decision. Every decision is made here, once, in Python.
+        #
+        # This is a deliberate reversal. The previous version matched in the
+        # browser so that "no patient value enters this process", and paid for it
+        # by having to carry a SECOND implementation of the name rule and the date
+        # rule in JavaScript. Two implementations of one rule is how the agent and
+        # the CRM came to disagree about who a person is. The values that cross
+        # back are held in locals, compared, and dropped: nothing is logged, and
+        # _refuse() messages name the field and never the value — the [L] sentinel
+        # in tests/test_survey_attach.py asserts exactly that.
+        #
+        # SCOPED, which is the other half of the fix. The name read is the
+        # ANCHOR's text, not the row's. Reading the row meant a survey name passed
+        # because its tokens happened to appear in the clinician or payer column.
         want_dob = _normalize_dob(data.dob)
-        want_name = _name_tokens(f"{data.first_name} {data.last_name}")
+        want_name = f"{data.first_name} {data.last_name}"
         try:
-            res = await rows.evaluate_all(
+            cells = await rows.evaluate_all(
                 r"""
-                (rows, args) => {
-                  const [wantName, wantDob] = args;
-                  const toks = (s) => (s || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-                  const normDob = (s) => {
-                    const m = (s || "").match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
-                    if (!m) return null;
-                    return String(m[1]).padStart(2,"0") + "/" + String(m[2]).padStart(2,"0") + "/" + m[3];
+                (anchors) => anchors.map(a => {
+                  const tr = a.closest('tr');
+                  const dobEl = tr ? tr.querySelector("a[data-testid='patient-search-dob-link']") : null;
+                  // Fallback when the row carries no date LINK: the first
+                  // date-shaped run in the row. A date, never the row itself.
+                  let fallback = "";
+                  if (!dobEl && tr) {
+                    const m = (tr.innerText || "").match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
+                    fallback = m ? m[0] : "";
+                  }
+                  return {
+                    name: (a.innerText || "").trim(),
+                    dob:  dobEl ? (dobEl.innerText || "").trim() : fallback,
+                    href: a.getAttribute('href') || "",
                   };
-                  const out = [];
-                  let nameOnly = 0;
-                  rows.forEach((tr, i) => {
-                    const a = tr.querySelector("a[data-testid='patient-search-patient-link']");
-                    if (!a) return;
-                    const rowToks = new Set(toks(tr.innerText || ""));
-                    if (!wantName.every(t => rowToks.has(t))) return;
-                    nameOnly++;
-                    const dobEl = tr.querySelector("a[data-testid='patient-search-dob-link']");
-                    const rowDob = normDob(dobEl ? dobEl.innerText : tr.innerText);
-                    if (rowDob !== null && rowDob === wantDob) out.push({ i, href: a.getAttribute('href') });
-                  });
-                  return { matched: out, nameOnly, total: rows.length };
-                }
-                """,
-                [want_name, want_dob],
+                })
+                """
             )
         except Exception as e:
             return self._refuse(phase, "unknown_error",
                                 f"Could not evaluate search results: {str(e)[:120]}", t0)
 
-        matched = res.get("matched") or []
+        cells = cells or []
+        matched = []
+        name_only = 0
+        for c in cells:
+            # ONE name rule, the same one the chart-header check and the CRM's
+            # matcher use: every reading of a parenthesised name, matched on
+            # intersection. "Minor (Rowan) Thistlewood" reads as both "minor thistlewood"
+            # and "rowan thistlewood", so a survey carrying the legal name agrees with
+            # it — and a middle name on one side only still does not.
+            if not names_agree(want_name, c.get("name")):
+                continue
+            name_only += 1
+            row_dob = _normalize_dob(c.get("dob"))
+            # Both sides must be READABLE and equal. `None == None` is not a
+            # match: a row whose date cannot be read is never selected, and a
+            # survey whose date cannot be read must not match every row.
+            if row_dob is not None and row_dob == want_dob:
+                matched.append(c)
+
+        # Counts only — no names, no dates.
         logger.info(
-            f"[ATTACH] narrowing: total={res.get('total')} name_matches={res.get('nameOnly')} "
+            f"[ATTACH] narrowing: total={len(cells)} name_matches={name_only} "
             f"name+dob_matches={len(matched)}"
         )
 
         if len(matched) == 0:
-            if res.get("nameOnly"):
+            if name_only:
                 return self._refuse(
                     phase, "patient_not_found",
-                    f"{res['nameOnly']} patient(s) matched the name but none matched the "
+                    f"{name_only} patient(s) matched the name but none matched the "
                     "date of birth given on the survey.", t0)
             return self._refuse(phase, "patient_not_found",
                                 "No patient matched this name in TherapyNotes", t0)
@@ -366,10 +417,11 @@ class SurveyAttachExecutor:
                                 "Search result did not carry a patient record link", t0)
         pid = m.group(1)
 
-        # Charts cannot be deep-linked; click the row's own anchor.
+        # Charts cannot be deep-linked; click the row's own anchor. Selected by
+        # the anchor itself, so a target on an even-indexed row is clickable —
+        # the old form was prefixed with `tr.Row`, which could not reach one.
         await self._page.click(
-            f"{SELECTORS_ATTACH['patients_page_result_row'][0]} "
-            f"{SELECTORS_ATTACH['patients_page_name_link'][0]}[href*='{pid}']"
+            f"{SELECTORS_ATTACH['patients_page_result_anchor'][0]}[href*='{pid}']"
         )
         await asyncio.sleep(4)
 
@@ -401,7 +453,7 @@ class SurveyAttachExecutor:
         written here that could drift from it.
         """
         phase = SurveyAttachPhase.SELECT
-        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_row"][0])
+        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_anchor"][0])
         want = data.expected_chart_id
         total = self._row_count
 
@@ -409,12 +461,7 @@ class SurveyAttachExecutor:
         # the rows crosses back into this process.
         try:
             hrefs = await rows.evaluate_all(
-                r"""
-                (rows) => rows.map(tr => {
-                  const a = tr.querySelector("a[data-testid='patient-search-patient-link']");
-                  return a ? (a.getAttribute('href') || "") : "";
-                })
-                """
+                r"""(anchors) => anchors.map(a => a.getAttribute('href') || "")"""
             )
         except Exception as e:
             return self._refuse(phase, "unknown_error",
@@ -459,8 +506,7 @@ class SurveyAttachExecutor:
 
         # Same click as the name path: charts cannot be deep-linked.
         await self._page.click(
-            f"{SELECTORS_ATTACH['patients_page_result_row'][0]} "
-            f"{SELECTORS_ATTACH['patients_page_name_link'][0]}[href*='{want}']"
+            f"{SELECTORS_ATTACH['patients_page_result_anchor'][0]}[href*='{want}']"
         )
         await asyncio.sleep(4)
 
@@ -484,13 +530,22 @@ class SurveyAttachExecutor:
         phase, t0 = SurveyAttachPhase.VERIFY, time.time()
 
         # --- name -------------------------------------------------------
+        # SAME RULE AS THE RESULTS TABLE, AND AS THE CRM'S MATCHER: every reading
+        # of a parenthesised name, matched on intersection. The chart header
+        # renders a patient with a preferred name as "Preferred (Legal) Last", so
+        # it reads as both, and a survey carrying either agrees with it.
+        #
+        # The element is already the NAME on its own — recon confirmed
+        # div#PatientInformation__PatientName holds the value in one text node
+        # with no children — so nothing more needs scoping here. What changes is
+        # the test: this was a token SUBSET, which passed "Thistlewood" against
+        # "Thistlewood-Smith" and passed a survey name that was missing a middle name
+        # the chart carries. It is now an equality on a reading.
         chart_name = await self._read_text("chart_patient_name")
         if chart_name is None:
             return self._refuse(phase, "field_unreadable",
                                 "Patient name could not be read from the chart", t0)
-        want = set(_name_tokens(f"{data.first_name} {data.last_name}"))
-        got = set(_name_tokens(chart_name))
-        if not want.issubset(got):
+        if not names_agree(f"{data.first_name} {data.last_name}", chart_name):
             return self._refuse(phase, "name_mismatch",
                                 "The name on the chart does not match the name on the survey", t0)
 
@@ -544,6 +599,12 @@ class SurveyAttachExecutor:
                 "This patient has no clinician assignments on the chart, so the "
                 "therapist named on the survey cannot be confirmed.", t0)
 
+        # DELIBERATELY NOT names_agree(). This is not one of the three PATIENT
+        # name comparisons; it is a clinician, and TherapyNotes renders an
+        # assignment as "Last, First, Credential". The credential is an extra
+        # token that the survey never carries, so an equality on a reading would
+        # refuse every correctly-assigned patient. Subset is the right test here
+        # and is left exactly as it was.
         want_clin = _name_tokens(data.clinician_name)
         try:
             hit = await assignments.evaluate_all(

@@ -12,9 +12,10 @@ absent, and — the point of the build — does not lower the bar on its way pas
 those guards.
 
 The fixtures REPRODUCE THE REAL STRUCTURE rather than a convenient one: the
-results page is table#PatientSearchTableList containing tr.Row elements whose
-anchors carry the real href shape, served on TherapyNotes' own origin so the
-relative hrefs resolve and the click is a real navigation. The helpers are
+results page is table#PatientSearchTableList whose rows ALTERNATE between
+tr.Row and tr.AlternateRow, with anchors carrying the real href shape, served
+on TherapyNotes' own origin so the relative hrefs resolve and the click is a
+real navigation. The helpers are
 imported from tests.test_survey_attach rather than copied, so the two suites
 cannot drift into testing different pages.
 
@@ -32,6 +33,7 @@ from services.api.survey_attach_executor import SurveyAttachExecutor
 from shared.patient_row_parsing import chart_id_from_href
 from shared.schemas.survey_attach import SurveyAttachInput, SurveyAttachOutput
 from tests.test_survey_attach import (
+    ANCHOR_SEL,
     CLINICIAN,
     DOB_PADDED,
     DOB_SHORT,
@@ -89,7 +91,8 @@ async def run_select(browser, rows, data, chart_html=None):
     await page.goto(f"{ORIGIN}/app/patients/")
     ex = make_ex(page)
     ex._selection_mode = None
-    ex._row_count = await page.locator("#PatientSearchTableList tr.Row").count()
+    # Counted by ANCHOR, never by tr.Row, which matches only the alternating half.
+    ex._row_count = await page.locator(ANCHOR_SEL).count()
     ok = await ex._phase_select(data)
     return ex, page, ok
 
@@ -102,10 +105,17 @@ async def main():
             browser = await p.chromium.launch()
 
             # ==============================================================
-            print("\n[1] Fifteen rows, the expected id among them -> opens THAT record")
-            # Yesterday this refused: fifteen rows is over RESULT_CAP_SUSPECT, so
+            print("\n[1] A FULL PAGE of rows, the expected id among them -> opens THAT record")
+            # Yesterday this refused: a full page is at RESULT_CAP_SUSPECT, so
             # the truncation guard fired before anything was narrowed.
-            rows = crowd(15, include_wanted_at=8)
+            #
+            # SIZED FROM THE CONSTANT, not from a literal. The cap was re-measured
+            # on 2026-09-21 (10 -> 20, the old value having been the page seen
+            # through tr.Row), and a hardcoded 15 quietly stopped being "over the
+            # cap" the moment it moved. The intent here is "a full page", so the
+            # fixture says that.
+            CAP = SurveyAttachExecutor.RESULT_CAP_SUSPECT
+            rows = crowd(CAP, include_wanted_at=8)
             ex, page, ok = await run_select(browser, rows, make_input(expected_chart_id=WANTED))
             r.check("selected", ok is True, ex._pending.get("message", ""))
             r.check("opened the expected chart, not another row",
@@ -116,10 +126,10 @@ async def main():
                     ex._pending.get("reason") != "result_set_possibly_truncated")
             await page.close()
 
-            # The same fifteen rows WITHOUT an id still refuse — proof the guard
+            # The same full page WITHOUT an id still refuses — proof the guard
             # is intact and the id is what moved, not the bar.
             ex, page, ok = await run_select(browser, rows, make_input())
-            r.check("the same fifteen rows still refuse when no id is supplied", ok is False)
+            r.check("the same full page still refuses when no id is supplied", ok is False)
             r.check("...as result_set_possibly_truncated",
                     ex._pending.get("reason") == "result_set_possibly_truncated",
                     ex._pending.get("reason"))
@@ -171,7 +181,9 @@ async def main():
 
             # Absent AND truncated: same verdict, message says the record may be
             # on a page the agent cannot see.
-            ex, page, ok = await run_select(browser, crowd(12), make_input(expected_chart_id=WANTED))
+            ex, page, ok = await run_select(
+                browser, crowd(SurveyAttachExecutor.RESULT_CAP_SUSPECT),
+                make_input(expected_chart_id=WANTED))
             r.check("absent from a truncated set refuses with the same reason",
                     ok is False and ex._pending.get("reason") == "expected_chart_not_in_results",
                     ex._pending.get("reason"))
@@ -184,7 +196,7 @@ async def main():
             # THE BAR HAS NOT MOVED. An id chooses the record; the four-field
             # check still decides whether to attach.
             wrong_person = chart_page(name="Zzsomeone Zzelse")
-            rows = crowd(15, include_wanted_at=8)
+            rows = crowd(SurveyAttachExecutor.RESULT_CAP_SUSPECT, include_wanted_at=8)
             ex, page, ok = await run_select(
                 browser, rows, make_input(expected_chart_id=WANTED), chart_html=wrong_person)
             r.check("selection still succeeded (the id chose the record)", ok is True)
@@ -234,7 +246,8 @@ async def main():
                 ("name but wrong date of birth",
                  [(PID, f"{FIRST} {LAST}", "9/9/1955")], "patient_not_found"),
                 ("two identical", crowd(2, same_name=True), "multiple_candidates"),
-                ("a full page", crowd(10), "result_set_possibly_truncated"),
+                ("a full page", crowd(SurveyAttachExecutor.RESULT_CAP_SUSPECT),
+                 "result_set_possibly_truncated"),
             ]:
                 ex, page, ok = await run_select(browser, rows_, make_input())
                 r.check(f"no-id: {label} -> {reason}",
