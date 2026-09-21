@@ -67,7 +67,7 @@ eq("TWO groups: the middle one reads, the trailing one annotates",
 eq("a group in the SURNAME position is trailing, so it annotates",
    name_keys("Rowan Thistlewood (Smith)"), ("rowan thistlewood",))
 eq("a group with words after it reads, wherever it sits",
-   name_keys("Rowan (Thistlewood) Smith"), ("rowan smith", "thistlewood smith"))
+   name_keys("Rowan (Thistlewood) Smith"), ("rowan smith", "smith thistlewood"))
 eq("a LEADING group still reads",
    name_keys("(Rowan) Thistlewood"), ("thistlewood", "rowan thistlewood"))
 eq("an empty group contributes nothing",
@@ -78,9 +78,9 @@ eq("empty input has no readings", name_keys("   "), ())
 eq("None has no readings", name_keys(None), ())
 eq("a hyphenated surname inside a group keeps both tokens",
    name_keys("Minor (Rowan) Thistlewood-Smith"),
-   ("minor thistlewood smith", "rowan thistlewood smith"))
+   ("minor smith thistlewood", "rowan smith thistlewood"))
 eq("'Minor' as an ACTUAL surname is untouched — no parenthetical, one reading",
-   name_keys("Rowan Minor"), ("rowan minor",))
+   name_keys("Rowan Minor"), ("minor rowan",))
 
 
 print("\n[3] names_agree — intersection, not subset")
@@ -133,9 +133,9 @@ PARITY = [
     ("Ashgrove-Pemberton, Rosalind", ["ashgrove pemberton rosalind"]),
     ("Minor (Rowan) Thistlewood (dad)", ["minor thistlewood", "rowan thistlewood"]),
     ("(Rowan) Thistlewood", ["thistlewood", "rowan thistlewood"]),
-    ("Rowan (Thistlewood) Smith", ["rowan smith", "thistlewood smith"]),
+    ("Rowan (Thistlewood) Smith", ["rowan smith", "smith thistlewood"]),
     ("Minor () Thistlewood", ["minor thistlewood"]),
-    ("Rowan Minor", ["rowan minor"]),
+    ("Rowan Minor", ["minor rowan"]),
 ]
 for raw, want in PARITY:
     eq(f"parity: {raw!r}", list(name_keys(raw)), want)

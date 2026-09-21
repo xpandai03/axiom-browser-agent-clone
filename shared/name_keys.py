@@ -111,11 +111,11 @@ def name_keys(raw) -> Tuple[str, ...]:
     with nothing after it is TRAILING, and a trailing group annotates rather than
     replaces, so it contributes no reading of its own.
 
-        "Minor (Rowan) Thistlewood"        -> ("minor thistlewood", "rowan thistlewood")
-        "Wendell (Wendy) Puffin"       -> ("puffin wendell", "puffin wendy")
-        "Rosalind Ashgrove (dad)"      -> ("ashgrove rosalind",)
-        "Minor (Rowan) Thistlewood (dad)"  -> ("minor thistlewood", "rowan thistlewood")
-        "Rowan Thistlewood"                -> ("rowan thistlewood",)
+        "Minor (Rowan) Thistlewood"       -> ("minor thistlewood", "rowan thistlewood")
+        "Wendell (Wendy) Puffin"          -> ("puffin wendell", "puffin wendy")
+        "Rosalind Ashgrove (dad)"         -> ("ashgrove rosalind",)
+        "Minor (Rowan) Thistlewood (dad)" -> ("minor thistlewood", "rowan thistlewood")
+        "Rowan Thistlewood"               -> ("rowan thistlewood",)
 
     An unbalanced "(" matches nothing and is simply a separator, which is what
     name_key does with it too.
