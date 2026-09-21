@@ -697,3 +697,53 @@ The risk is **a patient sitting on an even-indexed row is invisible to the match
 either a false refusal, or a "unique match" that is only unique among the half that was
 searched. **Flagged, not fixed** — this recon is read-only. Closing it needs the true row
 class enumerated (likely `tr.AltRow`) and the matcher widened to both.
+
+---
+
+## ✅ CLOSED 2026-09-21 — the row class, the page size, and the name cell
+
+Three facts, all measured on one read-only Patients-page search (no row clicked, no chart
+opened), after a live attach refused a survey whose chart matched it character for character.
+
+### 1. The alternate class is `tr.AlternateRow`, and the target was on one
+The search returned **9 result anchors against 5 `tr.Row`** — `ceil(9/2) = 5`, exactly the
+halving measured above. The record that the attach route reported as "No patient matched
+this name" was on a row whose className is **`AlternateRow`**. That closes the open
+question: the guess of `tr.AltRow` was wrong by one word.
+
+`survey_attach_executor.py` no longer uses `tr.Row` anywhere. Rows are located by the
+result anchor and the `<tr>` is reached with `a.closest('tr')`, which is what
+`active_patients_executor.py` and `active_count_executor.py` already did.
+
+### 2. `RESULT_CAP_SUSPECT` is 20, not 10
+The old 10 was a page seen through `tr.Row`. The table pages at **twenty**, which the
+page's own total phrase said all along (`Displaying 1-20 of 936`). Counting by anchor sees
+all twenty, so the threshold had to move or a complete set of eleven would refuse.
+
+The pager (`a#DynamicTablePagingLink.Next`) remains the *definitive* signal and is now
+logged beside the count on every search, so the two can be compared in the field before
+the guard is switched over to it.
+
+### 3. A patient with a preferred name renders `Preferred (Legal) Last` — in BOTH places
+The results-table anchor and the chart header carry the **same** format. Verified on the
+live results row; the anchor's inner text was `Minor (…) …`, wrapped in a plain `<span>`,
+and the chart header for the same patient carries the same shape.
+
+This matters to anything comparing a name:
+
+- The parentheses are **not** a trailing annotation. The group holds the **legal** first
+  name and the token before it is the **preferred** one — the practice sets `Minor` on
+  children's records. A rule that strips the group before tokenising deletes the legal
+  name.
+- Both orders exist in the population and the markup does not distinguish them. **Do not
+  write a rule that decides which token is legal.** `shared/name_keys.py` emits every
+  reading and matches on intersection; the CRM's `nameKeys()` is the same rule.
+- **Population, measured 2026-09-21 over 1,043 active patients:** 186 carry a
+  parenthetical, and every one of them is the `X (Y) Z` shape — **zero** trailing
+  annotations. 33 of the 186 lead with `Minor`.
+
+### What was NOT changed, and why
+The appointment-dialog patient search (`_MATCH_ROWS_JS`, `appt_patient_result_row`) is part
+of create-and-schedule. It does not use `tr.Row`, so the halving never reached it, and its
+whole-row subset test is *tolerant* of a parenthesised name rather than broken by it — it
+finds the patient. It is left exactly as it was.
