@@ -7,12 +7,14 @@ Endpoints:
 - GET  /api/tn/test           - Health check for TN executor
 """
 
+import contextlib
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from shared.schemas.therapy_notes import TNPatientInput, TNExecutorOutput
+from shared.phi_redaction import phi_scope_for, scrub_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tn", tags=["therapy-notes"])
@@ -35,8 +37,16 @@ async def create_patient(request: TNPatientInput):
 
     Returns structured output with per-phase logs, tn_patient_url, and tn_patient_id.
     """
+    # Every log line and exception inside this request is scrubbed of this
+    # patient's identifiers (shared/phi_redaction.py).
+    with phi_scope_for(request):
+        return await _create_patient(request)
+
+
+async def _create_patient(request: TNPatientInput):
     try:
-        logger.info(f"TN patient creation: {request.first_name} {request.last_name}")
+        # V1 carries no CRM contact id; the line says what happened, not to whom.
+        logger.info("TN patient creation: started")
 
         # Lazy import to avoid loading Playwright at startup
         from ..mcp_runtime import PlaywrightRuntime
@@ -61,7 +71,7 @@ async def create_patient(request: TNPatientInput):
 
         if result.status == "success":
             logger.info(
-                f"TN patient created: {result.patient_name} | "
+                f"TN patient created | "
                 f"url={result.tn_patient_url} id={result.tn_patient_id}"
             )
         else:
@@ -74,7 +84,7 @@ async def create_patient(request: TNPatientInput):
 
     except Exception as e:
         logger.exception(f"TN create-patient endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=scrub_text(str(e)))
 
 
 @router.post("/test-login")
@@ -85,6 +95,13 @@ async def test_login(patient: Optional[TNPatientInput] = None):
     Runs Phases 0-3 always (entry, login, navigate, detect form).
     If a TNPatientInput body is provided, also runs Phase 4 (fill) and Phase 5 (save).
     """
+    # When a patient is supplied, its identifiers are scrubbed from every log
+    # line this request writes (shared/phi_redaction.py).
+    with (phi_scope_for(patient) if patient else contextlib.nullcontext()):
+        return await _test_login(patient)
+
+
+async def _test_login(patient: Optional[TNPatientInput]):
     try:
         logger.info("TN login test starting")
 
@@ -170,7 +187,7 @@ async def test_login(patient: Optional[TNPatientInput] = None):
 
     except Exception as e:
         logger.exception(f"TN login test failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=scrub_text(str(e)))
 
 
 @router.get("/test")
