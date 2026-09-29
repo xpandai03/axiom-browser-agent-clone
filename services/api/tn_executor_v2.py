@@ -43,6 +43,8 @@ from shared.schemas.therapy_notes_v2 import (
     TNPhaseV2,
     TNPhaseLogV2,
     TNFailureReasonV2,
+    TNDocumentV2,
+    TNDocumentResultV2,
 )
 from services.api.config import TNCredentials, get_tn_credentials
 
@@ -259,6 +261,102 @@ def _normalize_dob(text: Optional[str]) -> Optional[str]:
         return None
     mm, dd, yyyy = m.groups()
     return f"{int(mm):02d}/{int(dd):02d}/{yyyy}"
+
+
+# The sentence staff see when TherapyNotes fills no city from a zip. Names the
+# field and the fix. Mirrored by the CRM's TN failure text for this code.
+ZIP_NOT_RECOGNISED_MESSAGE = (
+    "Zip code not recognised by TherapyNotes; check the address on the contact"
+)
+
+# What TherapyNotes prints after a document's name in its list cell
+# ("Intake Referral" then "PDF 1KB"). Used to tell "Custody order (CRM)" from a
+# longer name that merely starts with it.
+_TN_DOC_TYPE_LABELS = ("PDF", "JPG", "JPEG", "PNG", "GIF", "TIF", "TIFF", "BMP", "DOC", "DOCX", "IMAGE")
+
+_DOC_SUFFIX = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png"}
+
+
+def document_row_matches(cell_text: Optional[str], name: str) -> bool:
+    """
+    Is this Documents-list cell the document called exactly `name`?
+
+    The cell reads "<Name>" followed by TherapyNotes' type/size label, with or
+    without whitespace between them (docs/selectors/tn_v2_phases.md §9). So the
+    cell must START with the name, and whatever follows must be nothing,
+    whitespace, or a type label — never more name. "Custody order (CRM)" does
+    not match "Custody order (CRM 2) PDF 1KB"; "Client Survey 2026-09-28 (Sub 12)"
+    does not match "(Sub 123)". Case-sensitive: TherapyNotes shows what was typed.
+    """
+    if not cell_text or not name:
+        return False
+    text = " ".join(cell_text.split())
+    want = " ".join(name.split())
+    if not text.startswith(want):
+        return False
+    rest = text[len(want):]
+    if rest == "" or rest[0].isspace():
+        return True
+    return rest.upper().startswith(_TN_DOC_TYPE_LABELS)
+
+
+def sniff_document_mime(head: bytes) -> Optional[str]:
+    """The type a file's first bytes say it is: PDF, JPEG or PNG. Else None."""
+    if head.startswith(b"%PDF-"):
+        return "application/pdf"
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    return None
+
+
+def accept_allows(accept: Optional[str], mime_type: str) -> bool:
+    """
+    Does a file input's `accept` attribute allow this type? No attribute (the
+    recon's observation for #InputUploader) means anything is allowed.
+    """
+    if not accept or not accept.strip():
+        return True
+    tokens = [t.strip().lower() for t in accept.split(",") if t.strip()]
+    major = mime_type.split("/")[0]
+    exts = {"application/pdf": (".pdf",), "image/jpeg": (".jpg", ".jpeg"), "image/png": (".png",)}.get(mime_type, ())
+    for t in tokens:
+        if t == mime_type or t == f"{major}/*" or t == "*/*" or t in exts:
+            return True
+    return False
+
+
+def document_phase_summary(results: List[TNDocumentResultV2]) -> dict:
+    """
+    The callback metadata and message for the documents phase. Ids and codes
+    only. `documentsUploaded` lists every document now on the chart (filed by
+    this run or already there) — the CRM stamps exactly these.
+    """
+    on_chart = [r.crm_document_id for r in results if r.on_chart]
+    failed = next((r for r in results if r.status == "failed"), None)
+    unsupported = [r.crm_document_id for r in results if r.status == "unsupported"]
+    total = len(results)
+    msg = f"{len(on_chart)} of {total} CRM document{'s' if total != 1 else ''} on the chart"
+    if failed:
+        left = sum(1 for r in results if r.status == "not_attempted")
+        msg += (
+            f"; document {failed.crm_document_id} did not file ({failed.reason})"
+            + (f", {left} not attempted" if left else "")
+        )
+    if unsupported:
+        msg += f"; TherapyNotes does not accept the type of document(s) {', '.join(map(str, unsupported))}"
+    return {
+        "message": msg,
+        "metadata": {
+            "documentsUploaded": on_chart,
+            "documentResults": [
+                {"id": r.crm_document_id, "status": r.status, **({"reason": r.reason} if r.reason else {})}
+                for r in results
+            ],
+            "documentsPartial": len(on_chart) < total,
+        },
+    }
 
 
 class PdfFormatError(Exception):
@@ -484,23 +582,51 @@ class TNExecutorV2:
             ):
                 return await self._finish_failure()
 
+            # Phase 9 — CRM contact documents. Only when the CRM sent some (a
+            # CRM that predates the field sends none, and this is skipped
+            # entirely: no callback, no change). Never fails the run.
+            document_results: List[TNDocumentResultV2] = []
+            doc_summary = None
+            if patient.documents:
+                await self._emit(
+                    "upload_documents", "started",
+                    f"Filing {len(patient.documents)} CRM document(s)",
+                )
+                try:
+                    document_results = await self._phase_upload_documents(patient)
+                except Exception as e:  # belt and braces — the phase already catches
+                    logger.warning(f"[DOC] documents phase ended unexpectedly: {type(e).__name__}")
+                    document_results = [
+                        TNDocumentResultV2(crm_document_id=d.crm_document_id, status="not_attempted")
+                        for d in patient.documents
+                    ]
+                doc_summary = document_phase_summary(document_results)
+                # "ok" even when partial: the RUN succeeded. The metadata says
+                # which documents are on the chart; the CRM stamps exactly those.
+                await self._emit(
+                    "upload_documents", "ok", doc_summary["message"],
+                    metadata=doc_summary["metadata"],
+                )
+
             # All phases passed
             duration_ms = self._elapsed_ms()
             logger.info(f"WORKFLOW COMPLETE: {full_name} created in {duration_ms}ms")
-            await self._emit(
-                "workflow_complete", "ok",
-                "Workflow complete — patient and appointment created in TherapyNotes",
-                metadata={
-                    "tnPatientUrl": getattr(self, "_tn_patient_url", None),
-                    "durationMs": duration_ms,
-                },
-            )
+            complete_md = {
+                "tnPatientUrl": getattr(self, "_tn_patient_url", None),
+                "durationMs": duration_ms,
+            }
+            complete_msg = "Workflow complete — patient and appointment created in TherapyNotes"
+            if doc_summary:
+                complete_md.update(doc_summary["metadata"])
+                complete_msg += f"; {doc_summary['message']}"
+            await self._emit("workflow_complete", "ok", complete_msg, metadata=complete_md)
             return TNExecutorOutputV2.success(
                 patient_name=full_name,
                 logs=self._logs,
                 duration_ms=duration_ms,
                 tn_patient_url=getattr(self, "_tn_patient_url", None),
                 tn_patient_id=getattr(self, "_tn_patient_id", None),
+                document_results=document_results,
             )
 
         except Exception as e:
@@ -1332,7 +1458,29 @@ class TNExecutorV2:
                 timeout_ms=5000,
             )
             if not zip_ok:
-                return await self._fail_phase(phase, "zip_autocomplete_failed", "City did not auto-populate after zip", phase_start)
+                # ONE more lookup before concluding anything. A healthy lookup
+                # fills the city on the first poll (~3ms after blur); a city
+                # still empty after 5s means the lookup did not fire or gave
+                # nothing. Retyping re-fires it, which rules out a one-off.
+                logger.warning("[FILL] City: empty 5s after zip — retyping the zip once to re-run TherapyNotes' lookup")
+                retyped = await _type_zip()
+                if retyped == patient.zip:
+                    await zip_loc.press("Tab")
+                    await page.wait_for_timeout(500)
+                    zip_ok = await self._poll_condition(
+                        condition_fn=lambda: self._check_locator_has_value(city_loc),
+                        description="zip autocomplete → city populated (second lookup)",
+                        timeout_ms=5000,
+                    )
+            if not zip_ok:
+                # 28 September (contact 900753): a well-formed zip, typed and
+                # confirmed, for which TherapyNotes filled no city — twice. The
+                # agent cannot tell a mistyped zip from one TherapyNotes does not
+                # know, and typing a city of its own would put an address the EHR
+                # never validated on the chart. So it stops, and says which field
+                # to check. NEVER continue with a blank city.
+                await self._log_zip_lookup_state(zip_loc, city_loc, patient.zip)
+                return await self._fail_phase(phase, "zip_not_recognised", ZIP_NOT_RECOGNISED_MESSAGE, phase_start)
             city_val = await city_loc.input_value()
             logger.info("[FILL] City: auto-populated from zip")
 
@@ -1382,6 +1530,39 @@ class TNExecutorV2:
             return bool(val and val.strip())
         except Exception:
             return False
+
+    async def _log_zip_lookup_state(self, zip_loc, city_loc, typed_zip: str) -> None:
+        """
+        What the address block looked like when the zip lookup gave no city.
+        Booleans, counts and TherapyNotes' own element ids ONLY — never a value.
+        The ids answer the open question for a future fallback: which element
+        is the State field, and does TherapyNotes offer a list to choose from.
+        """
+        try:
+            zip_val = await zip_loc.input_value()
+            city_val = await city_loc.input_value()
+            facts = await self._page.evaluate(
+                """() => {
+                  const vis = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                  const ids = [...document.querySelectorAll('[id^="AddressEditorView__"]')].map(e => e.id);
+                  const lists = [...document.querySelectorAll('[role="listbox"], ul.ui-autocomplete, .autocomplete, .AutoComplete')]
+                    .filter(vis).length;
+                  const errs = [...document.querySelectorAll('[class*="rror"], [class*="alidation"]')]
+                    .filter(e => vis(e) && e.closest('[id^="AddressEditorView"], .AddressEditorView')).length;
+                  const state = document.querySelector('[id^="AddressEditorView__"][id*="State"]');
+                  return {ids, lists, errs, stateId: state ? state.id : null,
+                          stateEmpty: state ? !((state.value || '').trim()) : null};
+                }"""
+            )
+            logger.warning(
+                "[FILL] Zip lookup gave no city: "
+                f"zip_still_as_typed={zip_val == typed_zip} city_empty={not (city_val or '').strip()} "
+                f"visible_lists={facts.get('lists')} visible_errors={facts.get('errs')} "
+                f"state_field_id={facts.get('stateId')!r} state_empty={facts.get('stateEmpty')} "
+                f"address_ids={facts.get('ids')}"
+            )
+        except Exception as e:
+            logger.warning(f"[FILL] Zip lookup diagnostics unavailable: {type(e).__name__}")
 
     # ========================================================================
     # Phase 5: Save Patient
@@ -1750,7 +1931,8 @@ class TNExecutorV2:
                 )
 
             return await self._upload_pdf_to_patient(
-                self._tn_patient_url, pdf_path, document_name, phase, upload_fail_reason
+                self._tn_patient_url, pdf_path, document_name, phase, upload_fail_reason,
+                check_existing=False,
             )
         finally:
             if pdf_path:
@@ -1820,6 +2002,84 @@ class TNExecutorV2:
         logger.info(f"[PDF] Downloaded {total} bytes -> {path}")
         return path
 
+    async def _download_document_to_tempfile(self, url: str, mime_type: str) -> str:
+        """
+        Download a CRM contact document (PDF, JPEG or PNG) to a tempfile.
+
+        Same transport, key and size ceiling as _download_pdf_to_tempfile; the
+        difference is the type check: the bytes must be the type the CRM said,
+        judged by their first bytes. Caller owns cleanup.
+        """
+        import httpx
+
+        api_key = os.environ.get("TN_API_KEY")
+        headers = {"X-API-Key": api_key} if api_key else {}
+        tmp = tempfile.NamedTemporaryFile(suffix=_DOC_SUFFIX.get(mime_type, ".bin"), delete=False)
+        path = tmp.name
+        tmp.close()
+        total = 0
+        try:
+            async with httpx.AsyncClient(timeout=PDF_DOWNLOAD_TIMEOUT_S, follow_redirects=True) as client:
+                async with client.stream("GET", url, headers=headers) as resp:
+                    resp.raise_for_status()
+                    with open(path, "wb") as f:
+                        async for chunk in resp.aiter_bytes():
+                            total += len(chunk)
+                            if total > PDF_MAX_BYTES:
+                                raise ValueError(f"document exceeds max size {PDF_MAX_BYTES} bytes")
+                            f.write(chunk)
+            with open(path, "rb") as f:
+                head = f.read(8)
+            if sniff_document_mime(head) != mime_type:
+                raise PdfFormatError(f"downloaded file is not a {mime_type} ({total} bytes)")
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        logger.info(f"[DOC] Downloaded {total} bytes ({mime_type})")
+        return path
+
+    async def _document_on_chart(self, document_name: str) -> bool:
+        """
+        Is a document with exactly this name already in the patient's Documents
+        list? Waits briefly for the list to render; an empty list is "no".
+        The names read here stay in memory — none is logged.
+        """
+        rows_sel = ", ".join(SELECTORS_V2["document_list_rows"])
+        await self._poll_condition(
+            condition_fn=lambda: self._rows_present(rows_sel),
+            description="documents list rendered",
+            timeout_ms=4000,
+        )
+        try:
+            texts = await self._page.evaluate(
+                """(sel) => [...document.querySelectorAll(sel)].map(tr => {
+                     const cell = tr.querySelector('td.v-align-top') || tr.querySelector('td');
+                     return (cell ? cell.innerText : tr.innerText) || '';
+                   })""",
+                rows_sel,
+            )
+        except Exception:
+            return False
+        return any(document_row_matches(t, document_name) for t in texts or [])
+
+    async def _rows_present(self, rows_sel: str) -> bool:
+        try:
+            return await self._page.locator(rows_sel).count() > 0
+        except Exception:
+            return False
+
+    async def _close_upload_dialog(self) -> None:
+        try:
+            await self._page.keyboard.press("Escape")
+            close = self._page.locator(SELECTORS_V2["dialog_close_button"][0]).first
+            if await close.count() > 0 and await close.is_visible():
+                await close.click()
+        except Exception:
+            pass
+
     async def _upload_pdf_to_patient(
         self,
         patient_url: str,
@@ -1827,6 +2087,10 @@ class TNExecutorV2:
         document_name: str,
         phase: TNPhaseV2,
         upload_fail_reason: TNFailureReasonV2,
+        *,
+        check_existing: bool = True,
+        log_label: Optional[str] = None,
+        mime_type: str = "application/pdf",
     ) -> bool:
         """
         Upload a PDF to the patient's record via the Documents tab modal.
@@ -1838,6 +2102,10 @@ class TNExecutorV2:
         """
         phase_start = time.time()
         page = self._page
+        # Staff-entered document names never reach a log line or a failure
+        # message; callers filing CRM documents pass a neutral label.
+        label = log_label or repr(document_name)
+        self._last_upload_outcome = "failed"
 
         # Defensive: ensure we're on the right patient record before uploading.
         if patient_url and patient_url.rstrip("/") not in page.url:
@@ -1856,6 +2124,18 @@ class TNExecutorV2:
         await self._safe_click(tab, "Documents tab")
         await asyncio.sleep(1.5)
 
+        # ALREADY ON THE CHART? Checked before every upload to an existing chart,
+        # so a retry cannot file a second copy: a survey attach that timed out on
+        # the CRM's side after the upload landed, or a CRM document re-sent after
+        # a lost verdict. Exact name only (document_row_matches). The create
+        # flow's own two PDFs pass check_existing=False — their chart was created
+        # seconds earlier and is empty.
+        if check_existing and await self._document_on_chart(document_name):
+            self._last_upload_outcome = "already_on_chart"
+            self._record_log(phase, "success", f"{label} already on the chart — not uploaded again", phase_start=phase_start)
+            logger.info(f"[UPLOAD] {label} already on the chart — not uploading a second copy")
+            return True
+
         # Upload Patient File
         upload_btn = await self._resolve_v2("upload_patient_file_button")
         if not upload_btn:
@@ -1867,6 +2147,20 @@ class TNExecutorV2:
         file_in = page.locator(SELECTORS_V2["file_input"][0]).first
         if await file_in.count() == 0:
             return await self._fail_phase(phase, "pdf_upload_ui_not_found", "File input #InputUploader not found", phase_start)
+        # If TherapyNotes' picker restricts types, respect it rather than find
+        # out from a failed upload. The recon saw no `accept` attribute, which
+        # means anything is allowed.
+        try:
+            accept = await file_in.get_attribute("accept")
+        except Exception:
+            accept = None
+        if not accept_allows(accept, mime_type):
+            await self._close_upload_dialog()
+            self._last_upload_outcome = "unsupported"
+            logger.warning(f"[UPLOAD] {label}: TherapyNotes' file picker does not accept {mime_type}")
+            self._pending_failure = {"phase": phase, "reason": "document_unsupported_type",
+                                     "message": f"TherapyNotes does not accept {mime_type} uploads"}
+            return False
         await file_in.set_input_files(pdf_path)
 
         # Document Name (free text, verbatim) + dismiss autocomplete (I4)
@@ -1886,7 +2180,7 @@ class TNExecutorV2:
         if not enabled:
             return await self._fail_phase(
                 phase, upload_fail_reason,
-                f"'Add Document' never enabled for {document_name!r} (file may not have processed)",
+                f"'Add Document' never enabled for {label} (file may not have processed)",
                 phase_start,
             )
 
@@ -1897,19 +2191,20 @@ class TNExecutorV2:
         # or the success banner (secondary).
         ok = await self._poll_condition(
             condition_fn=lambda: self._v2_upload_succeeded(document_name),
-            description=f"document '{document_name}' uploaded",
+            description=f"document {label} uploaded",
             timeout_ms=15000,
         )
         if not ok:
             return await self._fail_phase(
                 phase, upload_fail_reason,
-                f"Upload of {document_name!r} not confirmed (no list row / banner)",
+                f"Upload of {label} not confirmed (no list row / banner)",
                 phase_start,
             )
 
         await self._debug_screenshot(f"{phase.value}_uploaded")
-        self._record_log(phase, "success", f"Uploaded '{document_name}'", phase_start=phase_start)
-        logger.info(f"[UPLOAD] '{document_name}' confirmed")
+        self._record_log(phase, "success", f"Uploaded {label}", phase_start=phase_start)
+        logger.info(f"[UPLOAD] {label} confirmed")
+        self._last_upload_outcome = "uploaded"
         return True
 
     async def _v2_add_document_enabled(self) -> bool:
@@ -1921,6 +2216,22 @@ class TNExecutorV2:
             return False
 
     async def _v2_upload_succeeded(self, document_name: str) -> bool:
+        # Strongest signal: a list row whose name cell is EXACTLY this name
+        # (document_row_matches). Robust to quotes in staff-entered names,
+        # which break the :has-text selector below.
+        try:
+            rows_sel = ", ".join(SELECTORS_V2["document_list_rows"])
+            texts = await self._page.evaluate(
+                """(sel) => [...document.querySelectorAll(sel)].map(tr => {
+                     const cell = tr.querySelector('td.v-align-top') || tr.querySelector('td');
+                     return (cell ? cell.innerText : tr.innerText) || '';
+                   })""",
+                rows_sel,
+            )
+            if any(document_row_matches(t, document_name) for t in texts or []):
+                return True
+        except Exception:
+            pass
         # Strong signal: a document list row containing the exact name.
         try:
             if await self._page.locator(f'tr:has-text("{document_name}")').count() > 0:
@@ -1935,6 +2246,87 @@ class TNExecutorV2:
         except Exception:
             pass
         return False
+
+    # ========================================================================
+    # Phase 9: CRM contact documents (after the appointment is booked)
+    # ========================================================================
+
+    async def _phase_upload_documents(self, patient: TNPatientInputV2) -> List[TNDocumentResultV2]:
+        """
+        File each CRM document on the chart, in the order the CRM sent (fax
+        referral first, then by upload time), through the same Documents-tab
+        dialog as the intake PDF, confirmed the same way.
+
+        NEVER FAILS THE RUN. It runs after the appointment is booked, so the
+        patient and the booking exist whatever happens here. The first document
+        that does not file stops the loop (the chart is in a state nothing has
+        seen yet — better to stop than to push on), and every later one is
+        reported not_attempted for the next run. A type TherapyNotes' picker
+        refuses is skipped and the loop continues.
+
+        Logs name documents by CRM id only; tn_name is staff-entered text.
+        """
+        results: List[TNDocumentResultV2] = []
+        stopped = False
+        _record = record_id_from_url(getattr(self, "_tn_patient_url", None))
+        for doc in patient.documents:
+            if stopped or not _record:
+                results.append(TNDocumentResultV2(
+                    crm_document_id=doc.crm_document_id, status="not_attempted",
+                    reason=None if _record else "no_patient_record",
+                ))
+                continue
+            label = f"CRM document {doc.crm_document_id}"
+            path = None
+            try:
+                try:
+                    path = await self._download_document_to_tempfile(doc.url, doc.mime_type)
+                except Exception as e:
+                    logger.warning(f"[DOC] {label}: download failed ({type(e).__name__})")
+                    results.append(TNDocumentResultV2(
+                        crm_document_id=doc.crm_document_id, status="failed",
+                        reason="document_download_failed",
+                    ))
+                    stopped = True
+                    continue
+                ok = await self._upload_pdf_to_patient(
+                    self._tn_patient_url, path, doc.tn_name,
+                    TNPhaseV2.UPLOAD_DOCUMENTS, "document_upload_failed",
+                    check_existing=True, log_label=label, mime_type=doc.mime_type,
+                )
+                outcome = getattr(self, "_last_upload_outcome", "failed")
+                if ok:
+                    results.append(TNDocumentResultV2(
+                        crm_document_id=doc.crm_document_id,
+                        status="already_on_chart" if outcome == "already_on_chart" else "uploaded",
+                    ))
+                elif outcome == "unsupported":
+                    results.append(TNDocumentResultV2(
+                        crm_document_id=doc.crm_document_id, status="unsupported",
+                        reason="document_unsupported_type",
+                    ))
+                else:
+                    results.append(TNDocumentResultV2(
+                        crm_document_id=doc.crm_document_id, status="failed",
+                        reason="document_upload_failed",
+                    ))
+                    stopped = True
+            except Exception as e:
+                # Anything unexpected still ends as a reported result, never a
+                # raised error that could reach execute()'s handler.
+                logger.warning(f"[DOC] {label}: unexpected {type(e).__name__}")
+                results.append(TNDocumentResultV2(
+                    crm_document_id=doc.crm_document_id, status="failed",
+                    reason="document_upload_failed",
+                ))
+                stopped = True
+            finally:
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+        return results
 
     # ========================================================================
     # Step 3 — Phase 8: Schedule appointment

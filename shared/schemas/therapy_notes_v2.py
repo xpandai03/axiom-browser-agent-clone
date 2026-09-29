@@ -35,11 +35,44 @@ class TNPhaseV2(str, Enum):
     UPLOAD_INTAKE_PDF = "upload_intake_pdf"
     UPLOAD_SNAPSHOT_PDF = "upload_snapshot_pdf"
     SCHEDULE_APPOINTMENT = "schedule_appointment"
+    # Contact documents from the CRM (custody orders, fax referrals, ...).
+    # Runs LAST, after the appointment is booked, and never fails the run: a
+    # document that does not file is reported, the patient and the booking stand.
+    UPLOAD_DOCUMENTS = "upload_documents"
 
 
 # ============================================================================
 # Input Schema
 # ============================================================================
+
+# TherapyNotes' Document Name input is maxlength=128 (docs/selectors/tn_v2_phases.md §4).
+TN_DOCUMENT_NAME_MAX = 128
+
+
+class TNDocumentV2(BaseModel):
+    """
+    One CRM contact document to file on the chart after the appointment.
+
+    The CRM chooses tn_name (e.g. "Custody order (CRM)") and makes it unique per
+    chart, because the agent looks for exactly that name on the chart before
+    uploading — it is how a re-run avoids filing a second copy. The name is
+    staff-entered text, so it is never written to a log line; the CRM's
+    document id is.
+    """
+
+    crm_document_id: int = Field(..., ge=1)
+    tn_name: str = Field(..., min_length=1, max_length=TN_DOCUMENT_NAME_MAX)
+    mime_type: Literal["application/pdf", "image/jpeg", "image/png"]
+    url: str = Field(..., description="CRM URL the agent fetches with its X-API-Key")
+
+    @field_validator("url")
+    @classmethod
+    def http_url(cls, v):
+        v = (v or "").strip()
+        if not (v.lower().startswith("http://") or v.lower().startswith("https://")):
+            raise ValueError("document url must be an http(s) URL")
+        return v
+
 
 class TNPatientInputV2(BaseModel):
     """Input for creating a patient in TherapyNotes."""
@@ -218,6 +251,12 @@ class TNPatientInputV2(BaseModel):
         description="CRM tn-progress endpoint (/api/internal/tn-progress/:contactId) to POST phase progress to.",
     )
 
+    # Contact documents to file after the appointment, in the order to file
+    # them (the CRM sends the fax referral first, then by upload time, and only
+    # documents not yet filed). Optional and empty by default, so a CRM that
+    # predates this field keeps working unchanged.
+    documents: List[TNDocumentV2] = Field(default_factory=list, max_length=25)
+
     @field_validator("intake_pdf_url", "snapshot_pdf_url")
     @classmethod
     def validate_http_url(cls, v, info):
@@ -267,6 +306,10 @@ TNFailureReasonV2 = Literal[
     "blocked_by_overlay",
     "form_field_not_found",
     "zip_autocomplete_failed",
+    # TherapyNotes filled no city from the zip, twice. Refused rather than
+    # guessing an address: "Zip code not recognised by TherapyNotes; check the
+    # address on the contact".
+    "zip_not_recognised",
     "save_failed",
     "patient_duplicate_detected",
     "patient_confirmation_failed",
@@ -283,7 +326,28 @@ TNFailureReasonV2 = Literal[
     "clinician_selection_failed",
     "scheduling_ui_not_found",
     "appointment_creation_failed",
+    # Contact documents (per-document; never the run's own failure reason)
+    "document_download_failed",
+    "document_unsupported_type",
+    "document_upload_failed",
 ]
+
+
+class TNDocumentResultV2(BaseModel):
+    """What happened to one contact document. Ids and codes only — no names."""
+
+    crm_document_id: int
+    # uploaded          — filed by this run, confirmed on the chart
+    # already_on_chart  — a document with this exact name was already there; not re-uploaded
+    # failed            — this one did not file (reason says why); the loop stopped here
+    # not_attempted     — after a failure, the rest were left for the next run
+    # unsupported       — TherapyNotes' file picker refuses this type; skipped, loop continued
+    status: Literal["uploaded", "already_on_chart", "failed", "not_attempted", "unsupported"]
+    reason: Optional[str] = None
+
+    @property
+    def on_chart(self) -> bool:
+        return self.status in ("uploaded", "already_on_chart")
 
 
 # ============================================================================
@@ -330,6 +394,10 @@ class TNExecutorOutputV2(BaseModel):
         None,
         description="TherapyNotes URL for the created patient (on success)",
     )
+    document_results: List[TNDocumentResultV2] = Field(
+        default_factory=list,
+        description="Per-document outcome of the upload_documents phase, in the order sent.",
+    )
     tn_patient_id: Optional[str] = Field(
         None,
         description="TherapyNotes patient ID extracted from URL (on success)",
@@ -346,9 +414,11 @@ class TNExecutorOutputV2(BaseModel):
         duration_ms: int,
         tn_patient_url: Optional[str] = None,
         tn_patient_id: Optional[str] = None,
+        document_results: Optional[List["TNDocumentResultV2"]] = None,
     ) -> "TNExecutorOutputV2":
         return cls(
             status="success",
+            document_results=list(document_results or []),
             patient_name=patient_name,
             logs=logs,
             screenshot_paths=[
