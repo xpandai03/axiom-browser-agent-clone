@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from shared.schemas.therapy_notes_v2 import TNPatientInputV2, TNExecutorOutputV2
+from shared.phi_redaction import phi_scope_for, scrub_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tn", tags=["therapy-notes-v2"])
@@ -42,8 +43,15 @@ async def create_patient_with_schedule(request: TNPatientInputV2):
 
     Returns structured output with per-phase logs, tn_patient_url, and tn_patient_id.
     """
+    # Every log line and exception inside this request is scrubbed of this
+    # patient's identifiers (shared/phi_redaction.py). Lines name the contact id.
+    with phi_scope_for(request):
+        return await _create_patient_with_schedule(request)
+
+
+async def _create_patient_with_schedule(request: TNPatientInputV2):
     try:
-        logger.info(f"TN V2 patient creation: {request.first_name} {request.last_name}")
+        logger.info(f"TN V2 patient creation: contact={request.contact_id} run={request.run_id}")
 
         # Lazy import to avoid loading Playwright at startup
         from ..mcp_runtime import PlaywrightRuntime
@@ -68,7 +76,7 @@ async def create_patient_with_schedule(request: TNPatientInputV2):
 
         if result.status == "success":
             logger.info(
-                f"TN V2 patient created: {result.patient_name} | "
+                f"TN V2 patient created: contact={request.contact_id} | "
                 f"url={result.tn_patient_url} id={result.tn_patient_id}"
             )
         else:
@@ -81,4 +89,4 @@ async def create_patient_with_schedule(request: TNPatientInputV2):
 
     except Exception as e:
         logger.exception(f"TN V2 create-patient-with-schedule endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=scrub_text(str(e)))

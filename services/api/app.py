@@ -34,6 +34,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
+# PHI backstop: every log record, from every logger, is scrubbed of the current
+# run's patient identifiers before any handler sees it. See shared/phi_redaction.py.
+from shared.phi_redaction import install_log_redaction  # noqa: E402
+
+install_log_redaction()
+
 logger = logging.getLogger(__name__)
 
 

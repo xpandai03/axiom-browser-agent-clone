@@ -22,6 +22,7 @@ Phases:
 
 import asyncio
 import logging
+from shared.phi_redaction import phi_scope_for, scrub_text
 import os
 import re
 import time
@@ -274,7 +275,9 @@ class TNExecutor:
             # All phases passed
             duration_ms = self._elapsed_ms()
             patient_name = f"{patient.first_name} {patient.last_name}"
-            logger.info(f"WORKFLOW COMPLETE: {patient_name} created in {duration_ms}ms")
+            # patient_name goes back in the HTTP response (the CRM already has
+            # it); the log line names nobody.
+            logger.info(f"WORKFLOW COMPLETE: patient created in {duration_ms}ms")
             return TNExecutorOutput.success(
                 patient_name=patient_name,
                 logs=self._logs,
@@ -1380,7 +1383,7 @@ class TNExecutor:
 
             self._record_log(
                 phase, "success",
-                f"Patient '{expected_name}' saved successfully",
+                "Patient saved successfully",
                 phase_start=phase_start,
             )
             logger.info("[SAVE] Patient created successfully")
@@ -2101,7 +2104,7 @@ class TNExecutor:
         log_entry = TNPhaseLog(
             phase=phase,
             status=status,
-            message=message,
+            message=scrub_text(message),
             duration_ms=duration_ms,
             screenshot_path=screenshot_path,
         )
@@ -2156,7 +2159,7 @@ class TNExecutor:
         pending = getattr(self, "_pending_failure", {})
         phase = phase_override or pending.get("phase", TNPhase.ENTRY)
         reason = reason_override or pending.get("reason", "unknown_error")
-        message = message_override or pending.get("message", "Unknown failure")
+        message = scrub_text(message_override or pending.get("message", "Unknown failure"))
 
         return TNExecutorOutput.failure(
             phase=phase,
@@ -2181,7 +2184,7 @@ _execution_lock = asyncio.Lock()
 # Module-level entry point (matches food_delivery_executor pattern)
 # ============================================================================
 
-async def run_tn_patient_creation(
+async def _run_tn_patient_creation_unscoped(
     runtime, patient: TNPatientInput
 ) -> TNExecutorOutput:
     """
@@ -2229,3 +2232,14 @@ async def run_tn_patient_creation(
         logger.info(f"TN credentials validated: {credentials.safe_display}")
         executor = TNExecutor(runtime, credentials)
         return await executor.execute(patient)
+
+
+
+async def run_tn_patient_creation(runtime, patient: TNPatientInput) -> TNExecutorOutput:
+    """
+    Entry point. Every log record written during the run — including exception
+    text and TherapyNotes messages echoed into logs — is scrubbed of this
+    patient's identifiers (shared/phi_redaction.py).
+    """
+    with phi_scope_for(patient):
+        return await _run_tn_patient_creation_unscoped(runtime, patient)

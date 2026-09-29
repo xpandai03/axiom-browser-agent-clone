@@ -47,6 +47,7 @@ from shared.schemas.therapy_notes_v2 import (
     TNDocumentResultV2,
 )
 from services.api.config import TNCredentials, get_tn_credentials
+from shared.phi_redaction import phi_scope_for, redact_mapping, scrub_text
 
 # Shared concurrency lock — V1 and V2 must serialize against the same TN account.
 from services.api.tn_executor import (
@@ -367,6 +368,14 @@ class PdfFormatError(Exception):
 # Progress callbacks → CRM tn-progress endpoint (CRM v128)
 # ============================================================================
 
+# Callback metadata the CRM reads, passed through without scrubbing.
+_CALLBACK_METADATA_KEEP = frozenset({
+    "tnPatientUrl", "tnPatientId", "appointmentDatetime", "durationMs",
+    "failureReason", "failedPhase", "phase", "documentName",
+    "documentsUploaded", "documentResults", "documentsPartial",
+})
+
+
 async def _emit_progress(
     callback_url: Optional[str],
     api_key: str,
@@ -387,15 +396,19 @@ async def _emit_progress(
     if not callback_url or not run_id or contact_id is None:
         return  # not configured → silent skip
 
+    # PHI never leaves in a callback: the message is scrubbed of this run's
+    # patient identifiers, and metadata loses any PHI-keyed value. The fields
+    # the CRM reads (ids, the chart URL, the appointment time, document results,
+    # codes) pass through untouched. See shared/phi_redaction.py.
     payload = {
         "contactId": contact_id,
         "runId": run_id,
         "phase": phase,
         "status": status,
-        "message": message,
+        "message": scrub_text(message),
     }
     if metadata:
-        payload["metadata"] = metadata
+        payload["metadata"] = redact_mapping(metadata, keep=_CALLBACK_METADATA_KEEP)
 
     try:
         import httpx
@@ -534,14 +547,14 @@ class TNExecutorV2:
             if not await self._step(
                 "fill_form", "Filling patient form",
                 self._phase_fill_required(patient),
-                f"Required fields filled for {full_name}",
+                "Required fields filled",
             ):
                 return await self._finish_failure()
 
             if not await self._step(
                 "save", "Saving patient",
                 self._phase_save_patient(patient),
-                f"Patient '{full_name}' saved in TherapyNotes",
+                "Patient saved in TherapyNotes",
                 lambda: {
                     "tnPatientUrl": getattr(self, "_tn_patient_url", None),
                     "tnPatientId": getattr(self, "_tn_patient_id", None),
@@ -610,7 +623,10 @@ class TNExecutorV2:
 
             # All phases passed
             duration_ms = self._elapsed_ms()
-            logger.info(f"WORKFLOW COMPLETE: {full_name} created in {duration_ms}ms")
+            logger.info(
+                f"WORKFLOW COMPLETE: contact={self._resolve_contact_id(patient)} "
+                f"run={getattr(patient, 'run_id', None)} created in {duration_ms}ms"
+            )
             complete_md = {
                 "tnPatientUrl": getattr(self, "_tn_patient_url", None),
                 "durationMs": duration_ms,
@@ -1851,7 +1867,7 @@ class TNExecutorV2:
 
             self._record_log(
                 phase, "success",
-                f"Patient '{expected_name}' saved successfully",
+                "Patient saved successfully",
                 phase_start=phase_start,
             )
             logger.info("[SAVE] Patient created successfully")
@@ -2564,10 +2580,12 @@ class TNExecutorV2:
                 # TEMP DIAG: Save stays disabled with no surfaced error — capture
                 # the full form field state so we can see which required field is
                 # empty/wrong, side-by-side with what V2 intended to set.
+                # Presence and size only: the date, time and alert text are about
+                # one patient (the alert is built from their record).
                 logger.info(
-                    f"[DIAG] V2 EXPECTED VALUES: date='{patient.appointment_date}', "
-                    f"time='{patient.appointment_time}', "
-                    f"alert='{patient.appointment_alert_text}', "
+                    f"[DIAG] V2 EXPECTED VALUES: date_set={bool(patient.appointment_date)}, "
+                    f"time_set={bool(patient.appointment_time)}, "
+                    f"alert_chars={len(patient.appointment_alert_text or '')}, "
                     f"clinician='{patient.clinician_name}'"
                 )
                 try:
@@ -2575,21 +2593,23 @@ class TNExecutorV2:
                         """() => {
                             const getById = (id) => {
                                 const el = document.getElementById(id);
-                                return el ? { found: true, value: el.value, disabled: el.disabled, tag: el.tagName } : { found: false };
+                                return el ? { found: true, filled: !!(el.value || '').trim(), disabled: el.disabled, tag: el.tagName } : { found: false };
                             };
-                            const q = (sel) => { const el = document.querySelector(sel); return el ? el.value : 'NOT_FOUND'; };
+                            // Whether a field holds something, and how much — never
+                            // what: these fields are about one patient.
+                            const q = (sel) => { const el = document.querySelector(sel); return el ? { filled: !!(el.value || '').trim(), chars: (el.value || '').length } : 'NOT_FOUND'; };
                             return {
                                 appointmentType: getById('CalendarEntryEditor__TypeSelect'),
                                 dateInput: q('[id*="DateInput"], [class*="DateInput"]'),
                                 timeStartInput: q('[id*="StartTime"], [id*="TimeInput"]'),
                                 timeEndInput: q('[id*="EndTime"]'),
                                 durationInput: q('[id*="Duration"]'),
-                                remindersTextArea: document.getElementById('CalendarEntryEditor__RemindersTextArea') ? document.getElementById('CalendarEntryEditor__RemindersTextArea').value : 'NOT_FOUND',
+                                remindersTextArea: q('#CalendarEntryEditor__RemindersTextArea'),
                                 allTextareas: Array.from(document.querySelectorAll('textarea')).map(t => ({
-                                    id: t.id, name: t.name, value: (t.value || '').substring(0, 200), visible: t.offsetParent !== null
+                                    id: t.id, name: t.name, chars: (t.value || '').length, visible: t.offsetParent !== null
                                 })),
                                 allDialogInputs: Array.from(document.querySelectorAll('[role="dialog"] input')).map(i => ({
-                                    id: i.id, name: i.name, type: i.type, value: i.value, disabled: i.disabled,
+                                    id: i.id, name: i.name, type: i.type, filled: !!(i.value || '').trim(), disabled: i.disabled,
                                     visible: i.offsetParent !== null, placeholder: i.placeholder
                                 })).filter(i => i.visible),
                                 requiredEmpty: Array.from(document.querySelectorAll('[role="dialog"] [required], [role="dialog"] [aria-required="true"]'))
@@ -2628,7 +2648,9 @@ class TNExecutorV2:
                                 url: location.href,
                                 visible: dialog.offsetParent !== null,
                                 classes: dialog.className,
-                                outerHTML_first_3000: dialog.outerHTML.substring(0, 3000),
+                                // The dialog's markup carries the patient's name and
+                                // appointment; its size is kept, its content is not.
+                                outerHTML_chars: dialog.outerHTML.length,
                                 errorMessages: Array.from(dialog.querySelectorAll('.error, .validation-error, .error-message, [class*="error"], [class*="Error"]'))
                                     .map(e => ({ text: e.textContent.trim(), classes: e.className }))
                                     .filter(e => e.text.length > 0),
@@ -2656,8 +2678,7 @@ class TNExecutorV2:
 
             self._record_log(
                 phase, "success",
-                f"Appointment scheduled ({patient.appointment_date} {patient.appointment_time}, "
-                f"clinician '{patient.clinician_name}')",
+                f"Appointment scheduled (clinician '{patient.clinician_name}')",
                 phase_start=phase_start,
             )
             logger.info("[SCHEDULE] Appointment created (dialog closed; verify selector in smoke test)")
@@ -3719,7 +3740,7 @@ class TNExecutorV2:
         log_entry = TNPhaseLogV2(
             phase=phase,
             status=status,
-            message=message,
+            message=scrub_text(message),
             duration_ms=duration_ms,
             screenshot_path=screenshot_path,
         )
@@ -3774,7 +3795,7 @@ class TNExecutorV2:
         pending = getattr(self, "_pending_failure", {})
         phase = phase_override or pending.get("phase", TNPhaseV2.ENTRY)
         reason = reason_override or pending.get("reason", "unknown_error")
-        message = message_override or pending.get("message", "Unknown failure")
+        message = scrub_text(message_override or pending.get("message", "Unknown failure"))
 
         return TNExecutorOutputV2.failure(
             phase=phase,
@@ -3898,7 +3919,7 @@ class TNExecutorV2:
 # Module-level entry point (matches food_delivery_executor pattern)
 # ============================================================================
 
-async def run_tn_v2_patient_creation(
+async def _run_tn_v2_patient_creation_unscoped(
     runtime, patient: TNPatientInputV2
 ) -> TNExecutorOutputV2:
     """
@@ -3946,3 +3967,14 @@ async def run_tn_v2_patient_creation(
         logger.info(f"TN credentials validated: {credentials.safe_display}")
         executor = TNExecutorV2(runtime, credentials)
         return await executor.execute(patient)
+
+
+
+async def run_tn_v2_patient_creation(runtime, patient: TNPatientInputV2) -> TNExecutorOutputV2:
+    """
+    Entry point. Every log record written during the run — including exception
+    text and TherapyNotes messages echoed into logs — is scrubbed of this
+    patient's identifiers (shared/phi_redaction.py).
+    """
+    with phi_scope_for(patient):
+        return await _run_tn_v2_patient_creation_unscoped(runtime, patient)

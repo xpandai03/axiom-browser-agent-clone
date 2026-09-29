@@ -20,6 +20,7 @@ guessed at.
 
 import asyncio
 import logging
+from shared.phi_redaction import phi_scope_for, scrub_text
 import os
 import re
 import time
@@ -147,7 +148,7 @@ class SurveyAttachExecutor:
 
     def _record(self, phase, status, message, phase_start=None) -> None:
         self._logs.append(SurveyAttachPhaseLog(
-            phase=phase, status=status, message=message,
+            phase=phase, status=status, message=scrub_text(message),
             duration_ms=int((time.time() - (phase_start or self._start_time)) * 1000),
         ))
 
@@ -162,7 +163,7 @@ class SurveyAttachExecutor:
         return SurveyAttachOutput.failure(
             phase=self._pending.get("phase", SurveyAttachPhase.ENTRY),
             reason=self._pending.get("reason", "unknown_error"),
-            message=self._pending.get("message", "Unknown failure"),
+            message=scrub_text(self._pending.get("message", "Unknown failure")),
             logs=self._logs,
             duration_ms=self._elapsed_ms(),
             tn_patient_url=tn_patient_url,
@@ -719,7 +720,7 @@ class SurveyAttachExecutor:
         return self._build_failure()
 
 
-async def run_survey_attach(runtime, data: SurveyAttachInput) -> SurveyAttachOutput:
+async def _run_survey_attach_unscoped(runtime, data: SurveyAttachInput) -> SurveyAttachOutput:
     """
     Entry point. Shares the create flow's module-level lock, so an attach and a
     scheduling run queue behind one another rather than fighting over the single
@@ -736,3 +737,14 @@ async def run_survey_attach(runtime, data: SurveyAttachInput) -> SurveyAttachOut
         credentials = get_tn_credentials()
         executor = SurveyAttachExecutor(runtime, credentials)
         return await executor.execute(data)
+
+
+
+async def run_survey_attach(runtime, data: SurveyAttachInput) -> SurveyAttachOutput:
+    """
+    Entry point. Every log record written during the run — including exception
+    text and TherapyNotes messages echoed into logs — is scrubbed of this
+    patient's identifiers (shared/phi_redaction.py).
+    """
+    with phi_scope_for(data):
+        return await _run_survey_attach_unscoped(runtime, data)

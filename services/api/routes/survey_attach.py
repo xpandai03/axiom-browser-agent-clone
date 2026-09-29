@@ -12,6 +12,7 @@ Endpoint:
 import logging
 
 from fastapi import APIRouter, HTTPException
+from shared.phi_redaction import phi_scope_for, scrub_text
 
 from shared.schemas.survey_attach import SurveyAttachInput, SurveyAttachOutput
 
@@ -30,6 +31,13 @@ async def attach_survey_to_chart(request: SurveyAttachInput):
     reason — a survey filed to the wrong chart is a PHI disclosure that cannot be
     undone, whereas a refusal costs a staff member a manual upload.
     """
+    # Every log line and exception inside this request is scrubbed of this
+    # patient's identifiers (shared/phi_redaction.py).
+    with phi_scope_for(request):
+        return await _attach_survey_to_chart(request)
+
+
+async def _attach_survey_to_chart(request: SurveyAttachInput):
     try:
         # Correlation ids only — no patient values in this line. Whether a chart
         # id was supplied is logged; the id itself is not, because it names one
@@ -65,4 +73,4 @@ async def attach_survey_to_chart(request: SurveyAttachInput):
 
     except Exception as e:
         logger.exception(f"[ATTACH] endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=scrub_text(str(e)))
