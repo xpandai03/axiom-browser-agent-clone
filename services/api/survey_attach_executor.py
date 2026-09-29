@@ -98,6 +98,38 @@ PATIENTS_URL = "https://www.therapynotes.com/app/patients/"
 _RECORD_URL_RE = re.compile(r"/patients/(?:edit|view|detail)/([^/?#]+)")
 
 
+def clinician_for_comparison(name: Optional[str]) -> str:
+    """
+    The clinician name as compared: any parenthesised group dropped ("Tyra Jones
+    (ABQ)" -> "Tyra Jones"), whitespace collapsed. The CRM already sends the
+    TherapyNotes form (location dropped, scheduling alias applied); this keeps an
+    older CRM's roster label from failing on its location code.
+    """
+    return " ".join(re.sub(r"\([^)]*\)", " ", name or "").split())
+
+
+def clinician_on_chart(sent: Optional[str], assignments: List[str]) -> bool:
+    """
+    Scheduling's word rule, as membership: every word of the sent name appears
+    in ONE of the chart's clinician assignments — case and punctuation
+    insensitive, order-free, so "Ty Jones" is found in "Ty Jones", "Jones, Ty"
+    or "Jones, Ty, LMHC". An empty name is never found.
+    """
+    want = set(_name_tokens(clinician_for_comparison(sent)))
+    if not want:
+        return False
+    return any(want <= set(_name_tokens(a or "")) for a in assignments)
+
+
+def clinician_refusal_message(sent: Optional[str], assignments: List[str]) -> str:
+    """Both sides of the comparison, so a refusal can be judged real or not. Staff names only."""
+    shown = ", ".join(f"'{a}'" for a in assignments) or "none"
+    return (
+        f"The clinician named on the survey ('{clinician_for_comparison(sent) or 'none'}') "
+        f"is not among this patient's {len(assignments)} chart assignment(s): {shown}."
+    )
+
+
 def _digits(value: Optional[str]) -> str:
     """Phone comparison is on digits only — formatting varies on both sides."""
     return "".join(c for c in (value or "") if c.isdigit())
@@ -606,28 +638,24 @@ class SurveyAttachExecutor:
         # token that the survey never carries, so an equality on a reading would
         # refuse every correctly-assigned patient. Subset is the right test here
         # and is left exactly as it was.
-        want_clin = _name_tokens(data.clinician_name)
+        # The chart renders each assignment as the clinician's name (recon,
+        # docs/selectors/tn_v2_phases.md); the word rule also covers "Last,
+        # First[, Credential]". Staff names only — read, compared, and quoted
+        # in a refusal so it can be judged real.
         try:
-            hit = await assignments.evaluate_all(
-                r"""
-                (nodes, want) => {
-                  const toks = (s) => (s || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-                  return nodes.some(n => {
-                    const t = new Set(toks(n.innerText || n.textContent || ""));
-                    return want.every(w => t.has(w));
-                  });
-                }
-                """,
-                want_clin,
-            )
+            rendered = [" ".join((t or "").split())[:80]
+                        for t in await assignments.all_inner_texts()][:10]
         except Exception:
-            hit = False
-        logger.info(f"[ATTACH] clinician check: {n_assign} assignment(s), expected present={hit}")
+            rendered = []
+        hit = clinician_on_chart(data.clinician_name, rendered)
+        logger.info(
+            f"[ATTACH] clinician check: sent='{clinician_for_comparison(data.clinician_name)}' "
+            f"chart={rendered} present={hit}"
+        )
         if not hit:
             return self._refuse(
                 phase, "clinician_mismatch",
-                f"The clinician named on the survey is not among this patient's "
-                f"{n_assign} chart assignment(s).", t0)
+                clinician_refusal_message(data.clinician_name, rendered), t0)
 
         logger.info("[ATTACH] verification passed: name, date of birth, mobile phone, clinician")
         self._record(phase, "success",
