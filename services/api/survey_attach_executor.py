@@ -27,7 +27,6 @@ import time
 from typing import List, Optional
 
 from shared.name_keys import names_agree
-from shared.patient_row_parsing import chart_id_from_href
 from shared.schemas.survey_attach import (
     SurveyAttachInput,
     SurveyAttachOutput,
@@ -36,6 +35,14 @@ from shared.schemas.survey_attach import (
 )
 from shared.schemas.therapy_notes_v2 import TNPhaseV2
 from services.api.config import get_tn_credentials
+from services.api.active_count_executor import (
+    ACTIVITY_ACTIVE,
+    OPTION_ANY,
+    SEL_ACTIVITY_FILTER,
+    SEL_CLINICIAN_FILTER,
+    SEL_PAGER_NEXT,
+    SEL_RESULTS_CONTAINER,
+)
 from services.api.tn_executor_v2 import (
     TNExecutorV2,
     _execution_lock,
@@ -139,26 +146,18 @@ class SurveyAttachExecutor:
     STEP_TIMEOUT_MS = 15_000
     CLINICIAN_TAB_TIMEOUT_MS = 10_000
 
-    # Result count at or above which the set is treated as TRUNCATED and refused
-    # without opening any chart.
-    #
-    # RE-MEASURED 2026-09-21 AGAINST THE FULL TABLE. The previous value, 10, was
-    # measured through `tr.Row` and was therefore half of a page: recon read the
-    # page's own total phrase as "Displaying 1-20 of 936" while `tr.Row` returned
-    # 10, and 14 items returned 7, and 13 returned 7. The table pages at TWENTY.
-    #
-    # Counting by anchor now sees all twenty, so the threshold has to be the real
-    # page size or the guard fires on a complete set of eleven and refuses work it
-    # should do. A live search on 2026-09-21 returned 9 anchors with no pager
-    # rendered — under the cap, correctly not refused.
-    #
-    # At 20 the guard stays deliberately conservative: a search returning exactly
-    # twenty COMPLETE results also refuses, because a full page is
-    # indistinguishable from a truncated one on row count alone. The definitive
-    # signal is the pager (`a#DynamicTablePagingLink.Next`), which is a better
-    # test; it is logged beside the count here and remains a follow-up rather than
-    # a behaviour change bundled into this fix.
-    RESULT_CAP_SUSPECT = 20
+    # TherapyNotes pages the patient list at TWENTY rows (measured 2026-09-21:
+    # "Displaying 1-20 of 936"). Truncation is no longer guessed from a full
+    # page: the pager link is the signal, and pages are followed.
+    PAGE_SIZE = 20
+
+    # Result pages read before a search is treated as possibly truncated. Five
+    # pages of 20 is 100 patients sharing a surname, well past any real one.
+    MAX_SEARCH_PAGES = 5
+    # The nightly pull's timings (ActiveCountExecutor): a postback may take a
+    # while, and a settle after the results container appears.
+    NAV_TIMEOUT_MS = 20_000
+    SETTLE_MS = 900
 
     def __init__(self, runtime, credentials):
         self._runtime = runtime
@@ -261,30 +260,42 @@ class SurveyAttachExecutor:
 
     async def _phase_search(self, data: SurveyAttachInput) -> bool:
         """
-        Search the Patients page by SURNAME ALONE.
+        Search the Patients page by SURNAME, with the filters set, and read every
+        result page up to MAX_SEARCH_PAGES.
 
-        Not the full name, and this is empirical rather than a preference. A live
-        run searching "First Last" for a patient stored as "First Middle Last"
-        returned four rows, none of them the target; the same record is returned
-        by its surname alone. TherapyNotes' matching does not behave like a
-        substring test, and a more specific query is not a narrower one — it can
-        simply miss.
+        SURNAME, NOT THE FULL NAME, and this is empirical. A live run searching
+        "First Last" for a patient stored as "First Middle Last" returned four
+        rows, none of them the target; the same record comes back on its surname
+        alone. TherapyNotes' search is not a substring test, so a more specific
+        query is not a narrower one, and it can miss WITHOUT returning zero rows,
+        which is why there is no "full name first, surname if empty" fallback.
+        Narrowing in _phase_select is exact (name reading + date of birth), so a
+        broad query costs nothing in precision.
 
-        Not phone either: the field accepts "Name, Acct #, Phone, or Ins ID" and
-        phone would be narrower, but the shape TherapyNotes stores a number in is
-        unknown, so a digit-string query could return nothing for a patient who
-        is present.
+        THE FILTERS ARE SET, not inherited: Activity = Active and Assigned To =
+        any clinician, the same values the nightly pull uses.
 
-        So: cast the query wide enough to CONTAIN the target, then narrow
-        precisely. Narrowing (in _phase_select) still requires the result's NAME
-        CELL to agree with the survey name on a full reading, plus an exact
-        date-of-birth match, so a broad query costs nothing in precision. It does
-        return more rows, which is what the truncation guard is for.
+        THE RELOAD IS WAITED FOR. Search and the pager are WebForms postbacks,
+        real navigations. This used to sleep 3.5s and count whatever was on
+        screen, which reads a page that has not reloaded yet as "no results".
+        It now waits the way the nightly pull does: the navigation, then the
+        results container, then a short settle.
+
+        EVERY PAGE, up to MAX_SEARCH_PAGES. A common surname used to refuse at a
+        full first page. Now the pages are read and the decision is made over
+        all of them; only a search that still has more pages after the cap is
+        refused, as possibly truncated.
         """
         phase, t0 = SurveyAttachPhase.SEARCH, time.time()
         page = self._page
         await page.goto(PATIENTS_URL, wait_until="domcontentloaded")
-        await asyncio.sleep(2.5)
+        try:
+            await page.wait_for_selector(
+                SELECTORS_ATTACH["patients_page_search_input"][0],
+                state="attached", timeout=15_000,
+            )
+        except Exception:
+            pass
 
         box = await self._first("patients_page_search_input")
         btn = await self._first("patients_page_search_submit")
@@ -292,142 +303,196 @@ class SurveyAttachExecutor:
             return self._refuse(phase, "search_ui_not_found",
                                 "Patients-page search controls not found", t0)
 
+        try:
+            await page.select_option(SEL_ACTIVITY_FILTER, value=ACTIVITY_ACTIVE,
+                                     timeout=self.NAV_TIMEOUT_MS)
+            await self._settle(4000)
+            await page.select_option(SEL_CLINICIAN_FILTER, value=OPTION_ANY,
+                                     timeout=self.NAV_TIMEOUT_MS)
+            await self._settle(4000)
+        except Exception:
+            return self._refuse(phase, "search_ui_not_found",
+                                "Patients-page filters (Activity, Assigned To) not found", t0)
+
+        await self._run_search(data.last_name)
+        total = sum(len(p) for p in self._pages)
+        self._row_count = total
+        # Counts only.
+        logger.info(
+            f"[ATTACH] search mode=surname activity=active pages={len(self._pages)} "
+            f"rows={total} more_pages={'yes' if self._truncated else 'no'}"
+        )
+        self._record(phase, "success",
+                     f"Search returned {total} row(s) over {len(self._pages)} page(s)", t0)
+        return True
+
+    async def _settle(self, timeout_ms: int = 6000) -> None:
+        """Wait for the results container, then a short settle. Never networkidle:
+        TherapyNotes holds connections open (see ActiveCountExecutor._settle)."""
+        try:
+            await self._page.wait_for_selector(SEL_RESULTS_CONTAINER, state="attached",
+                                               timeout=timeout_ms)
+        except Exception:
+            pass
+        await self._page.wait_for_timeout(self.SETTLE_MS)
+
+    async def _click_and_wait(self, selector: str) -> None:
+        """Click a postback control and wait for the new document, as the nightly
+        pull does (ActiveCountExecutor._click_and_wait)."""
+        try:
+            async with self._page.expect_navigation(wait_until="domcontentloaded",
+                                                    timeout=self.NAV_TIMEOUT_MS):
+                await self._page.click(selector, timeout=self.NAV_TIMEOUT_MS)
+        except Exception:
+            # The click raced the navigation, or there was none.
+            pass
+        await self._settle(self.NAV_TIMEOUT_MS)
+
+    async def _read_page(self) -> dict:
+        """
+        This page's results: per row, the name cell's text, the date-of-birth
+        cell's text and the href, plus whether a Next pager link exists.
+
+        Three SCOPED strings per row and no decision: every decision is made in
+        Python, once. The name read is the ANCHOR's text, never the row's, so a
+        survey name cannot pass because its tokens appear in the clinician or
+        payer column. Values are held in locals, compared and dropped; nothing
+        is logged.
+        """
+        try:
+            res = await self._page.evaluate(
+                r"""
+                ([anchorSel, nextSel]) => ({
+                  rows: [...document.querySelectorAll(anchorSel)].map(a => {
+                    const tr = a.closest('tr');
+                    const dobEl = tr ? tr.querySelector("a[data-testid='patient-search-dob-link']") : null;
+                    // Fallback when the row carries no date LINK: the first
+                    // date-shaped run in the row. A date, never the row itself.
+                    let fallback = "";
+                    if (!dobEl && tr) {
+                      const m = (tr.innerText || "").match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
+                      fallback = m ? m[0] : "";
+                    }
+                    return {
+                      name: (a.innerText || "").trim(),
+                      dob:  dobEl ? (dobEl.innerText || "").trim() : fallback,
+                      href: a.getAttribute('href') || "",
+                    };
+                  }),
+                  hasNext: !!document.querySelector(nextSel),
+                })
+                """,
+                [SELECTORS_ATTACH["patients_page_result_anchor"][0], SEL_PAGER_NEXT],
+            )
+        except Exception:
+            res = None
+        return res or {"rows": [], "hasNext": False}
+
+    async def _run_search(self, term: str, stop_at_page: Optional[int] = None) -> List[dict]:
+        """
+        Submit the search and read result pages.
+
+        With stop_at_page, stops ON that page (0-based) and returns its rows,
+        leaving the browser there so a row on it can be clicked. Without it, reads
+        up to MAX_SEARCH_PAGES into self._pages and sets self._truncated when a
+        further page remains.
+        """
+        box = await self._first("patients_page_search_input")
         await box.click()
         await box.fill("")
-        await box.fill(data.last_name)
-        await btn.click()          # a SEARCH submit — not a save-family control
-        await asyncio.sleep(3.5)
+        await box.fill(term)
+        # A SEARCH submit, not a save-family control.
+        await self._click_and_wait(SELECTORS_ATTACH["patients_page_search_submit"][0])
 
-        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_anchor"][0])
-        try:
-            count = await rows.count()
-        except Exception:
-            count = 0
-        # The pager is the definitive truncation signal and the row count is a
-        # proxy for it. Logged together so the two can be compared in the field
-        # before the guard is switched over to the pager.
-        try:
-            pager = await self._page.locator("a#DynamicTablePagingLink.Next").count() > 0
-        except Exception:
-            pager = False
-        logger.info(f"[ATTACH] search returned {count} row(s), pager={'yes' if pager else 'no'}")
-        self._record(phase, "success", f"Search returned {count} row(s)", t0)
-        self._row_count = count
-        return True
+        pages: List[List[dict]] = []
+        truncated = False
+        while True:
+            data = await self._read_page()
+            if stop_at_page is not None and len(pages) == stop_at_page:
+                self._current_page = stop_at_page
+                return data["rows"]
+            pages.append(data["rows"])
+            if not data["hasNext"]:
+                break
+            if len(pages) >= self.MAX_SEARCH_PAGES:
+                truncated = True
+                break
+            await self._click_and_wait(SEL_PAGER_NEXT)
+
+        self._pages = pages
+        self._truncated = truncated
+        self._current_page = len(pages) - 1
+        return pages[-1] if pages else []
+
+    @staticmethod
+    def _narrow(cells: List[dict], want_name: str, want_dob: Optional[str]):
+        """(rows agreeing on name AND date of birth, count agreeing on name)."""
+        matched, name_only = [], 0
+        for c in cells:
+            # ONE name rule, the same one the chart-header check and the CRM's
+            # matcher use: every reading of a parenthesised name, matched on
+            # intersection. "Minor (Rowan) Thistlewood" reads as both
+            # "minor thistlewood" and "rowan thistlewood", so a survey carrying
+            # the legal name agrees with it, and a middle name on one side only
+            # still does not.
+            if not names_agree(want_name, c.get("name")):
+                continue
+            name_only += 1
+            row_dob = _normalize_dob(c.get("dob"))
+            # Both sides must be READABLE and equal. `None == None` is not a
+            # match: a row whose date cannot be read is never selected.
+            if row_dob is not None and row_dob == want_dob:
+                matched.append(c)
+        return matched, name_only
 
     async def _phase_select(self, data: SurveyAttachInput) -> bool:
         """
-        Narrow to EXACTLY ONE candidate, then open that chart.
+        Narrow to EXACTLY ONE row on name + date of birth across every page read,
+        then open that chart.
 
-        Narrowing uses the date of birth the result row already shows, so no
-        chart is opened in order to decide which chart to open.
+        BY NAME AND DATE OF BIRTH ONLY. A chart id the CRM sends is IGNORED.
+        TherapyNotes' record id (the token in /app/patients/edit/<id>/) changes
+        between page loads: the id the nightly pull captured is never the id a
+        later search shows for the same patient, so selecting by it refused every
+        time it was tried (2026-09-22 to 2026-10-01). Which chart is decided
+        here; whether to attach is decided by _phase_verify, unchanged.
         """
         phase, t0 = SurveyAttachPhase.SELECT, time.time()
-        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_anchor"][0])
+        self._selection_mode = "name"
+        if data.expected_chart_id:
+            logger.info("[ATTACH] expected_chart_id received and ignored; "
+                        "selecting by name and date of birth")
         total = self._row_count
 
         if total == 0:
             return self._refuse(phase, "patient_not_found",
                                 "No patient matched this name in TherapyNotes", t0)
 
-        # WHICH RECORD, WHEN THE CRM ALREADY KNOWS.
-        #
-        # Everything below this branch chooses a record by NAME, and refuses
-        # whenever name and date of birth cannot single one out — fifteen rows on
-        # a common surname, or two people genuinely sharing both. Those refusals
-        # are correct while the agent is guessing. They are unnecessary when it
-        # is not: a chart id names the record, so ambiguity is resolved by a fact
-        # and the truncation and multiple-candidate guards below have nothing
-        # left to protect against.
-        #
-        # It decides WHICH chart, never WHETHER to attach. _phase_verify runs
-        # identically on both paths.
-        self._selection_mode = "chart_id" if data.expected_chart_id else "name"
-        if data.expected_chart_id:
-            return await self._select_by_chart_id(data, t0)
-
-        if total >= self.RESULT_CAP_SUSPECT:
+        if self._truncated:
             return self._refuse(
                 phase, "result_set_possibly_truncated",
-                f"Search returned {total} rows, filling the "
-                f"{self.RESULT_CAP_SUSPECT}-row page the TherapyNotes patient list "
-                "pages at, so there are very likely more results the agent cannot "
-                "see. Refusing to select from a list that could be hiding another "
-                "identical match — attach this document by hand.",
+                f"Search returned more than {self.MAX_SEARCH_PAGES} pages of results "
+                f"({total} rows read), so there may be another identical match the "
+                "agent did not see. Attach this document by hand.",
                 t0,
             )
 
-        # WHAT COMES BACK FROM THE BROWSER, AND WHY IT IS NOT A VERDICT.
-        #
-        # The browser returns three SCOPED strings per result — the name cell's
-        # own text, the date-of-birth cell's own text, and the href — and makes no
-        # decision. Every decision is made here, once, in Python.
-        #
-        # This is a deliberate reversal. The previous version matched in the
-        # browser so that "no patient value enters this process", and paid for it
-        # by having to carry a SECOND implementation of the name rule and the date
-        # rule in JavaScript. Two implementations of one rule is how the agent and
-        # the CRM came to disagree about who a person is. The values that cross
-        # back are held in locals, compared, and dropped: nothing is logged, and
-        # _refuse() messages name the field and never the value — the [L] sentinel
-        # in tests/test_survey_attach.py asserts exactly that.
-        #
-        # SCOPED, which is the other half of the fix. The name read is the
-        # ANCHOR's text, not the row's. Reading the row meant a survey name passed
-        # because its tokens happened to appear in the clinician or payer column.
         want_dob = _normalize_dob(data.dob)
         want_name = f"{data.first_name} {data.last_name}"
-        try:
-            cells = await rows.evaluate_all(
-                r"""
-                (anchors) => anchors.map(a => {
-                  const tr = a.closest('tr');
-                  const dobEl = tr ? tr.querySelector("a[data-testid='patient-search-dob-link']") : null;
-                  // Fallback when the row carries no date LINK: the first
-                  // date-shaped run in the row. A date, never the row itself.
-                  let fallback = "";
-                  if (!dobEl && tr) {
-                    const m = (tr.innerText || "").match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/);
-                    fallback = m ? m[0] : "";
-                  }
-                  return {
-                    name: (a.innerText || "").trim(),
-                    dob:  dobEl ? (dobEl.innerText || "").trim() : fallback,
-                    href: a.getAttribute('href') || "",
-                  };
-                })
-                """
-            )
-        except Exception as e:
-            return self._refuse(phase, "unknown_error",
-                                f"Could not evaluate search results: {str(e)[:120]}", t0)
-
-        cells = cells or []
-        matched = []
+        found = []          # (page index, row)
         name_only = 0
-        for c in cells:
-            # ONE name rule, the same one the chart-header check and the CRM's
-            # matcher use: every reading of a parenthesised name, matched on
-            # intersection. "Minor (Rowan) Thistlewood" reads as both "minor thistlewood"
-            # and "rowan thistlewood", so a survey carrying the legal name agrees with
-            # it — and a middle name on one side only still does not.
-            if not names_agree(want_name, c.get("name")):
-                continue
-            name_only += 1
-            row_dob = _normalize_dob(c.get("dob"))
-            # Both sides must be READABLE and equal. `None == None` is not a
-            # match: a row whose date cannot be read is never selected, and a
-            # survey whose date cannot be read must not match every row.
-            if row_dob is not None and row_dob == want_dob:
-                matched.append(c)
+        for i, cells in enumerate(self._pages):
+            m, n = self._narrow(cells, want_name, want_dob)
+            found += [(i, c) for c in m]
+            name_only += n
 
-        # Counts only — no names, no dates.
+        # Counts only: no names, no dates.
         logger.info(
-            f"[ATTACH] narrowing: total={len(cells)} name_matches={name_only} "
-            f"name+dob_matches={len(matched)}"
+            f"[ATTACH] narrowing: total={total} pages={len(self._pages)} "
+            f"name_matches={name_only} name+dob_matches={len(found)}"
         )
 
-        if len(matched) == 0:
+        if len(found) == 0:
             if name_only:
                 return self._refuse(
                     phase, "patient_not_found",
@@ -436,23 +501,34 @@ class SurveyAttachExecutor:
             return self._refuse(phase, "patient_not_found",
                                 "No patient matched this name in TherapyNotes", t0)
 
-        if len(matched) > 1:
+        if len(found) > 1:
             return self._refuse(
                 phase, "multiple_candidates",
-                f"{len(matched)} patients share this name AND date of birth. The "
-                "search results carry nothing else to separate them — attach this "
+                f"{len(found)} patients share this name AND date of birth. The "
+                "search results carry nothing else to separate them; attach this "
                 "document by hand after confirming which record is correct.", t0)
 
-        href = matched[0]["href"]
-        m = _RECORD_URL_RE.search(href or "")
+        page_index, row = found[0]
+        if page_index != self._current_page:
+            # The row is on an earlier page. Its href is from THAT page load and
+            # will not be valid now, so return to the page and find the row again
+            # by the same rule. It must still be the only match there.
+            cells = await self._run_search(data.last_name, stop_at_page=page_index)
+            again, _ = self._narrow(cells, want_name, want_dob)
+            if len(again) != 1:
+                return self._refuse(phase, "chart_not_opened",
+                                    "The search results changed while the agent was "
+                                    "reading them; attach this document by hand.", t0)
+            row = again[0]
+
+        m = _RECORD_URL_RE.search(row.get("href") or "")
         if not m:
             return self._refuse(phase, "chart_not_opened",
                                 "Search result did not carry a patient record link", t0)
         pid = m.group(1)
 
         # Charts cannot be deep-linked; click the row's own anchor. Selected by
-        # the anchor itself, so a target on an even-indexed row is clickable —
-        # the old form was prefixed with `tr.Row`, which could not reach one.
+        # the anchor itself, so a target on an even-indexed row is clickable.
         await self._page.click(
             f"{SELECTORS_ATTACH['patients_page_result_anchor'][0]}[href*='{pid}']"
         )
@@ -465,93 +541,6 @@ class SurveyAttachExecutor:
 
         self._chart_url = self._page.url
         self._record(phase, "success", "Opened the single matching patient chart", t0)
-        return True
-
-    async def _select_by_chart_id(self, data: SurveyAttachInput, t0: float) -> bool:
-        """
-        Open the row whose link carries the chart id the CRM supplied.
-
-        NO FALLBACK. If the expected id is not among the results, this refuses
-        rather than reverting to name selection. The CRM believed a specific
-        record existed and the search did not surface it — the patient may have
-        been merged, discharged or renumbered — and that is a situation for a
-        person, not for a second guess. Falling back would also be the one way
-        this build could make things WORSE than yesterday: it would take a run
-        that had a precise expectation and quietly downgrade it to the guess the
-        expectation was meant to replace.
-
-        THE ID SPACE IS NOT ASSUMED TO MATCH. The hrefs are parsed with
-        chart_id_from_href — the same function the nightly active-patients pull
-        used to produce the ids the CRM stores — rather than with a second regex
-        written here that could drift from it.
-        """
-        phase = SurveyAttachPhase.SELECT
-        rows = self._page.locator(SELECTORS_ATTACH["patients_page_result_anchor"][0])
-        want = data.expected_chart_id
-        total = self._row_count
-
-        # Hrefs only. A record id is not a patient value, and nothing else about
-        # the rows crosses back into this process.
-        try:
-            hrefs = await rows.evaluate_all(
-                r"""(anchors) => anchors.map(a => a.getAttribute('href') || "")"""
-            )
-        except Exception as e:
-            return self._refuse(phase, "unknown_error",
-                                f"Could not evaluate search results: {str(e)[:120]}", t0)
-
-        matched = [i for i, h in enumerate(hrefs or []) if chart_id_from_href(h) == want]
-        logger.info(
-            f"[ATTACH] id-directed selection: {total} row(s) searched, "
-            f"{len(matched)} carrying the expected chart id"
-        )
-
-        if not matched:
-            # Truncation does not change the verdict, but it does change what a
-            # human should go and look at, so the message says which it was.
-            truncated = total >= self.RESULT_CAP_SUSPECT
-            extra = (
-                f" The search also filled the {self.RESULT_CAP_SUSPECT}-row page "
-                "the patient list pages at, so the record may simply be on a page "
-                "the agent cannot see."
-                if truncated else
-                " The search returned results, but none of them was that record."
-            )
-            return self._refuse(
-                phase, "expected_chart_not_in_results",
-                "The patient record the CRM expected did not appear in the "
-                "TherapyNotes search results. The patient may have been merged, "
-                "discharged or renumbered since the last nightly pull." + extra +
-                " Attach this document by hand after confirming which record is "
-                "correct.",
-                t0,
-            )
-
-        if len(matched) > 1:
-            # Two rows carrying the SAME id are two links to one record, so
-            # either opens the same chart and there is nothing to choose between
-            # them. Logged because it should not happen and a human may want to
-            # know the list rendered a duplicate.
-            logger.warning(
-                f"[ATTACH] the expected chart id appeared on {len(matched)} rows; "
-                "they address one record, opening it"
-            )
-
-        # Same click as the name path: charts cannot be deep-linked.
-        await self._page.click(
-            f"{SELECTORS_ATTACH['patients_page_result_anchor'][0]}[href*='{want}']"
-        )
-        await asyncio.sleep(4)
-
-        landed = _RECORD_URL_RE.search(self._page.url or "")
-        if not landed or landed.group(1) != want:
-            return self._refuse(phase, "chart_not_opened",
-                                "Clicking the expected record did not land on that "
-                                "patient chart", t0)
-
-        self._chart_url = self._page.url
-        self._record(phase, "success",
-                     "Opened the patient chart the CRM identified by chart id", t0)
         return True
 
     async def _phase_verify(self, data: SurveyAttachInput) -> bool:
@@ -707,6 +696,9 @@ class SurveyAttachExecutor:
         self._pending = {}
         self._chart_url = None
         self._row_count = 0
+        self._pages = []
+        self._truncated = False
+        self._current_page = 0
         self._selection_mode = None
 
         self._mech = TNExecutorV2(self._runtime, self._credentials)

@@ -36,7 +36,7 @@ SurveyAttachFailureReason = Literal[
     "patient_not_found",           # zero results
     "multiple_candidates",         # >1 survives narrowing
     "result_set_possibly_truncated",  # too many rows to trust the set is complete
-    "expected_chart_not_in_results",  # the CRM named a chart the search did not surface
+    "expected_chart_not_in_results",  # RETIRED 2026-10-01: no longer emitted; kept so old outcomes still parse
     "chart_not_opened",            # click did not land on a patient record
     "field_unreadable",            # a verification field could not be read at all
     "name_mismatch",
@@ -84,18 +84,12 @@ class SurveyAttachInput(BaseModel):
         None,
         max_length=64,
         description=(
-            "The TherapyNotes chart id the CRM believes this survey belongs to, "
-            "when it knows one. OPTIONAL, and absent is an ordinary case: a "
-            "survey attached before matching ran, or one matched to a CRM "
-            "contact that carries no chart id, arrives without it and is "
-            "selected by name exactly as before.\n\n"
-            "When PRESENT it decides WHICH record to open — the row whose link "
-            "carries this id is opened regardless of how many rows came back, "
-            "and if no row carries it the run refuses rather than falling back "
-            "to name selection. It does NOT decide whether to attach: the "
-            "four-field verification against the chart runs identically either "
-            "way. An id says which chart; verification says whether it is the "
-            "right person."
+            "IGNORED. Accepted so a CRM that still sends it is not rejected, "
+            "but it never decides which chart is opened. TherapyNotes' record id "
+            "(the token in /app/patients/edit/<id>/) changes between page loads, "
+            "so an id captured by the nightly pull never matches the id a later "
+            "search shows for the same patient. Selection is by name and date of "
+            "birth; the four-field verification decides whether to attach."
         ),
     )
 
