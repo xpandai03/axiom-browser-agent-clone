@@ -43,7 +43,7 @@ CLINICIAN = "Zzamanda Zzdavison"
 OTHER_CLIN = "Zzother Zzclinician"
 
 
-def results_page(rows):
+def results_page(rows, next_href=None, activity="inactive", assignment="zzclin"):
     """
     rows: list of (pid, name, dob_text) or (pid, name, dob_text, trailing_cells).
 
@@ -70,11 +70,60 @@ def results_page(rows):
             f"<td>{trailing}</td>"
             f"</tr>"
         )
+    # THE PAGE AROUND THE TABLE, as TherapyNotes serves it: a WebForms form whose
+    # Search submit and pager are real navigations, Activity and Assigned-To
+    # filters, and the results container the nightly pull waits on. The filters'
+    # defaults are deliberately NOT the ones attach needs, so a run that does not
+    # set them sees no rows (see serve_search).
+    def opt(v, cur):
+        return f'<option value="{v}"{" selected" if v == cur else ""}>{v}</option>'
+    pager = (f'<a id="DynamicTablePagingLink" class="Next" href="{next_href}">Next</a>'
+             if next_href else "")
     return f"""<html><body>
-      <input id="ctl00_BodyContent_TextBoxSearchPatientName">
-      <input type="submit" id="ctl00_BodyContent_ButtonSearch">
-      <table id="PatientSearchTableList">{trs}</table>
+      <form method="get" action="/app/patients/">
+        <select id="ctl00_BodyContent_DropDownListSearchActivity" name="activity">
+          {opt("inactive", activity)}{opt("active", activity)}{opt("all", activity)}</select>
+        <select id="ctl00_BodyContent_DropDownListSearchAssignment" name="assignment">
+          {opt("zzclin", assignment)}{opt("any", assignment)}</select>
+        <input id="ctl00_BodyContent_TextBoxSearchPatientName" name="q">
+        <input type="submit" id="ctl00_BodyContent_ButtonSearch" value="Search">
+      </form>
+      <div id="DivPatientsList"><table id="PatientSearchTableList">{trs}</table>{pager}</div>
     </body></html>"""
+
+
+def serve_search(rows, served, delay_s=0.0, page_size=20):
+    """
+    A route handler that behaves like the Patients page.
+
+    Before a search: no rows. A search whose filters are not Activity=active and
+    Assigned To=any: no rows either, which is how a run that skips the filters
+    shows up. Otherwise `rows` paged at `page_size`, with a Next link while more
+    remain. `delay_s` holds every search response back, to prove the reload is
+    waited for rather than slept past. Every query served is appended to `served`.
+    """
+    from urllib.parse import urlparse, parse_qs, urlencode
+
+    async def handler(route, request):
+        u = urlparse(request.url)
+        if "/patients/edit/" in u.path:
+            return await route.fulfill(status=200, content_type="text/html", body=chart_page())
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if "q" not in q:
+            return await route.fulfill(status=200, content_type="text/html", body=results_page([]))
+        served.append(q)
+        if delay_s:
+            await asyncio.sleep(delay_s)
+        act, asg = q.get("activity"), q.get("assignment")
+        hits = rows if (act == "active" and asg == "any") else []
+        n = int(q.get("page", "1"))
+        chunk = hits[(n - 1) * page_size: n * page_size]
+        nxt = None
+        if n * page_size < len(hits):
+            nxt = "/app/patients/?" + urlencode({**q, "page": n + 1})
+        await route.fulfill(status=200, content_type="text/html",
+                            body=results_page(chunk, nxt, act or "inactive", asg or "zzclin"))
+    return handler
 
 
 def chart_page(name=f"{FIRST} {LAST}", dob=DOB_SHORT, phone=PHONE_CHART,
@@ -140,30 +189,27 @@ def make_ex(page):
     ex = object.__new__(SurveyAttachExecutor)
     ex._page = page; ex._logs = []; ex._pending = {}
     ex._start_time = 0.0; ex._chart_url = None; ex._row_count = 0; ex._mech = None
+    ex._pages = []; ex._truncated = False; ex._current_page = 0; ex._selection_mode = None
     return ex
 
 
 ORIGIN = "https://www.therapynotes.com"
 
 
-async def run_search_select(browser, rows, data):
+async def run_search_select(browser, rows, data, delay_s=0.0):
     """
-    Drive search+select against a results page SERVED ON TN'S ORIGIN, so the
-    relative hrefs on the result anchors resolve and clicking one performs a real
-    navigation — the behaviour _phase_select asserts on.
+    Drive the REAL search and then select, against a Patients page SERVED ON
+    TN'S ORIGIN (see serve_search), so the form submit and the pager are real
+    navigations and clicking a result lands on a chart URL. The queries the page
+    received are on ex._served.
     """
     page = await browser.new_page(viewport={"width": 1400, "height": 1000})
-
-    async def handler(route, request):
-        body = chart_page() if "/patients/edit/" in request.url else results_page(rows)
-        await route.fulfill(status=200, content_type="text/html", body=body)
-
-    await page.route(f"{ORIGIN}/**", handler)
+    served = []
+    await page.route(f"{ORIGIN}/**", serve_search(rows, served, delay_s))
     await page.goto(f"{ORIGIN}/app/patients/")
     ex = make_ex(page)
-    # Counted the way _phase_search counts: by ANCHOR, never by tr.Row.
-    ex._row_count = await page.locator(ANCHOR_SEL).count()
-    ok = await ex._phase_select(data)
+    ex._served = served
+    ok = await ex._phase_search(data) and await ex._phase_select(data)
     return ex, page, ok
 
 
@@ -257,29 +303,75 @@ async def main():
             r.check("no chart opened", ex._chart_url is None)
             await page.close()
 
-            print("\n[J] A FULL page of results -> refuses WITHOUT opening a chart")
-            # RE-MEASURED 2026-09-21: the Patients table pages at TWENTY. The old
-            # value of 10 was that page seen through tr.Row, i.e. half of it.
-            CAP = SurveyAttachExecutor.RESULT_CAP_SUSPECT
-            r.check("threshold is the true page size (20), not the halved one",
-                    CAP == 20, CAP)
+            print("\n[J] A FULL page and NO further page -> proceeds (the pager decides, not the count)")
+            PS = SurveyAttachExecutor.PAGE_SIZE
+            r.check("page size is the measured 20", PS == 20, PS)
             rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 0 else "1/1/1971")
-                    for i in range(CAP)]
+                    for i in range(PS)]
             ex, page, ok = await run_search_select(browser, rows, make_input())
-            r.check("full page refused despite a unique DOB match being present", ok is False)
+            r.check("a complete page of 20 proceeds", ok is True, ex._pending.get("message", ""))
+            r.check("opened the DOB-matching chart", "Zzid0" in (ex._chart_url or ""), ex._chart_url)
+            await page.close()
+
+            print("\n[J2] Three pages, the target on the LAST page -> found")
+            rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 44 else "1/1/1971")
+                    for i in range(45)]
+            ex, page, ok = await run_search_select(browser, rows, make_input())
+            r.check("found on page 3", ok is True, ex._pending.get("message", ""))
+            r.check("opened Zzid44", "Zzid44/" in (ex._chart_url or ""), ex._chart_url)
+            r.check("read all three pages", len(ex._pages) == 3, len(ex._pages))
+            await page.close()
+
+            print("\n[J3] Three pages, the target on the FIRST page -> returns to it and opens it")
+            rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 3 else "1/1/1971")
+                    for i in range(45)]
+            ex, page, ok = await run_search_select(browser, rows, make_input())
+            r.check("found on page 1 after reading page 3", ok is True, ex._pending.get("message", ""))
+            r.check("opened Zzid3", "Zzid3/" in (ex._chart_url or ""), ex._chart_url)
+            r.check("searched again to get back to page 1", len(ex._served) >= 4, len(ex._served))
+            await page.close()
+
+            print("\n[J4] More pages than the cap -> result_set_possibly_truncated, no chart opened")
+            cap_rows = SurveyAttachExecutor.MAX_SEARCH_PAGES * PS + 1
+            rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 0 else "1/1/1971")
+                    for i in range(cap_rows)]
+            ex, page, ok = await run_search_select(browser, rows, make_input())
+            r.check("refused even with a unique match on page 1", ok is False)
             r.check("reason is result_set_possibly_truncated",
                     ex._pending.get("reason") == "result_set_possibly_truncated",
                     ex._pending.get("reason"))
+            r.check("read exactly the cap", len(ex._pages) == SurveyAttachExecutor.MAX_SEARCH_PAGES,
+                    len(ex._pages))
             r.check("no chart opened", ex._chart_url is None)
-            r.check("names the page size", str(CAP) in ex._pending.get("message", ""))
             await page.close()
 
-            print("\n[J2] One row BELOW the page size -> proceeds (not a false refusal)")
-            rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i == 0 else "1/1/1971")
-                    for i in range(CAP - 1)]
+            print("\n[J5] The same name and DOB on page 1 AND page 3 -> multiple_candidates")
+            rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i in (2, 41) else "1/1/1971")
+                    for i in range(45)]
             ex, page, ok = await run_search_select(browser, rows, make_input())
-            r.check("partial page proceeds", ok is True, ex._pending.get("message", ""))
-            r.check("opened the DOB-matching chart", "Zzid0" in (ex._chart_url or ""), ex._chart_url)
+            r.check("refused", ok is False)
+            r.check("reason is multiple_candidates",
+                    ex._pending.get("reason") == "multiple_candidates", ex._pending.get("reason"))
+            r.check("no chart opened", ex._chart_url is None)
+            await page.close()
+
+            print("\n[J6] A search that takes 5s to come back -> still found")
+            # Tolerance of a slow server, not proof of a fixed race: Playwright's
+            # click already waits for the postback to commit, so a fixed sleep
+            # passed this too. The wait is the nightly pull's (navigation, then
+            # the results container) so the two read the page the same way.
+            ex, page, ok = await run_search_select(
+                browser, [("Zzid1", f"{FIRST} {LAST}", DOB_SHORT)], make_input(), delay_s=5.0)
+            r.check("waited for the reload and found the patient", ok is True,
+                    ex._pending.get("reason") or ex._pending.get("message", ""))
+            await page.close()
+
+            print("\n[J7] The filters are SET, not inherited from the page")
+            ex, page, ok = await run_search_select(
+                browser, [("Zzid1", f"{FIRST} {LAST}", DOB_SHORT)], make_input())
+            first = ex._served[0] if ex._served else {}
+            r.check("Activity submitted as active", first.get("activity") == "active", first.get("activity"))
+            r.check("Assigned To submitted as any", first.get("assignment") == "any", first.get("assignment"))
             await page.close()
 
             print("\n[K] Name matches but date of birth does not -> patient_not_found at select")
@@ -347,16 +439,12 @@ async def main():
 
             print("\n[N] The search query is the SURNAME ALONE, not the full name")
             # A live run proved "First Last" can miss a patient stored as
-            # "First Middle Last" while the surname alone returns them. Pin it.
-            page = await browser.new_page(viewport={"width": 1400, "height": 1000})
-            await page.route(f"{ORIGIN}/**", lambda r: asyncio.ensure_future(
-                r.fulfill(status=200, content_type="text/html", body=results_page([]))))
-            await page.goto(f"{ORIGIN}/app/patients/")
-            ex = make_ex(page)
-            await ex._phase_search(make_input())
-            typed = await page.input_value("#ctl00_BodyContent_TextBoxSearchPatientName")
+            # "First Middle Last" while the surname alone returns them. Pin it,
+            # on what the page actually RECEIVED.
+            ex, page, ok = await run_search_select(browser, [], make_input())
+            typed = (ex._served[0] if ex._served else {}).get("q")
             r.check("searched on the surname alone", typed == LAST, typed)
-            r.check("did NOT include the first name", FIRST not in typed, typed)
+            r.check("did NOT include the first name", FIRST not in (typed or ""), typed)
             await page.close()
 
             print("\n[M] Phone comparison is on digits, shape-insensitive")
@@ -388,13 +476,15 @@ async def main():
                     ex._chart_url)
             await page.close()
 
-            print("\n[R2] The same nine rows, id-directed -> also reaches an even row")
+            print("\n[R2] A chart id naming a DIFFERENT row is ignored -> name + DOB decides")
+            # TherapyNotes record ids change between page loads, so the CRM's id
+            # can never be trusted to name a row. Here it names a decoy.
             ex, page, ok = await run_search_select(
-                browser, rows, make_input(expected_chart_id="Zzid7"))
-            r.check("id-directed selection succeeded", ok is True,
-                    ex._pending.get("message", ""))
-            r.check("opened Zzid7", "Zzid7" in (ex._chart_url or ""), ex._chart_url)
-            r.check("recorded as chart_id selection", ex._selection_mode == "chart_id")
+                browser, rows, make_input(expected_chart_id="Zzid3"))
+            r.check("selection succeeded", ok is True, ex._pending.get("message", ""))
+            r.check("opened the name+DOB row Zzid7, not the id's Zzid3",
+                    "Zzid7/" in (ex._chart_url or ""), ex._chart_url)
+            r.check("recorded as name selection", ex._selection_mode == "name")
             await page.close()
 
             print("\n[S] Preferred (Legal) Last -> matches on the legal name")
