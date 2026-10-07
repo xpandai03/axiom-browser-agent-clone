@@ -628,3 +628,128 @@ async def test_e_the_survey_attach_path_keeps_the_pre_check():
     assert "check_existing=False" not in call
     v2 = pathlib.Path("services/api/tn_executor_v2.py").read_text()
     assert "check_existing: bool = True" in v2, "the default must be to check"
+
+
+# ---------------------------------------------------------------------------
+# The pre-check against a list that is not there yet (2026-10-06)
+#
+# Production on 2026-10-01: 1059 and 1061 were each sent twice and filed twice
+# on the same chart, 80s apart, with check_existing on — and since 29 Sept the
+# "already on the chart" line has never once been logged. The pre-check used to
+# wait only until ANY tr.Row existed on the page and then read once. A patient
+# record carries other tables, so that wait was satisfied before the Documents
+# list had loaded, and the read found nothing.
+# ---------------------------------------------------------------------------
+
+def _documents_tab_late(existing_names, delay_ms=3000):
+    """The Documents list arrives `delay_ms` after the tab is clicked; an
+    unrelated table's tr.Row is on the page from the start."""
+    import json
+    page = _documents_tab([])
+    script = (
+        "<script>document.querySelector(\"a[href='#tab=Documents']\").addEventListener('click', function () {"
+        f"  var names = {json.dumps(existing_names)};"
+        "  setTimeout(function () { names.forEach(function (n) {"
+        "    var tr = document.createElement('tr'); tr.className = 'Row';"
+        "    var td = document.createElement('td'); td.className = 'v-align-top';"
+        "    var a = document.createElement('a'); a.href = '#'; a.textContent = n;"
+        "    td.appendChild(a); td.appendChild(document.createElement('br'));"
+        "    td.appendChild(document.createTextNode('PDF 1KB')); tr.appendChild(td);"
+        "    document.getElementById('docs').appendChild(tr);"
+        f"  }}); }}, {delay_ms});"
+        "});</script>"
+    )
+    page = page.replace(
+        '<table id="docs">',
+        '<table id="other"><tr class="Row"><td class="v-align-top">Progress Note</td><td>9/27/2026</td></tr></table>'
+        '<table id="docs">',
+    )
+    return page.replace("</body></html>", script + "</body></html>")
+
+
+async def test_f_a_list_that_loads_late_still_stops_a_second_copy(caplog):
+    caplog.set_level(logging.INFO)
+    ok, outcome, clicked, added, _ = await _upload_on(_documents_tab_late([SURVEY]), SURVEY)
+    assert clicked == 0 and added == [], "uploaded a second copy before the list had loaded"
+    assert ok is True and outcome == "already_on_chart"
+    assert any("pre-check" in r.getMessage() and "match=yes" in r.getMessage() for r in caplog.records)
+
+
+async def test_f_a_late_list_without_it_still_uploads_once(caplog):
+    caplog.set_level(logging.INFO)
+    ok, outcome, clicked, added, _ = await _upload_on(
+        _documents_tab_late(["Client Survey 2026-09-28 (Sub 123)"]), SURVEY)
+    assert clicked == 1 and added == [SURVEY]
+    assert ok is True and outcome == "uploaded"
+    lines = [r.getMessage() for r in caplog.records if "pre-check" in r.getMessage()]
+    assert lines and "match=no" in lines[0], lines
+    assert not any("Sub 123" in l or SURVEY in l for l in lines), "the pre-check log must carry counts only"
+
+
+async def test_f_attach_route_second_request_for_a_submission_is_already_filed(tmp_path):
+    """
+    The attach route end to end on the mock chart: the same survey requested
+    twice. The first files it; the second reads the Documents list, finds the
+    exact name and returns "already filed" without opening the upload dialog.
+    """
+    from playwright.async_api import async_playwright
+    from services.api.survey_attach_executor import SurveyAttachExecutor
+    from shared.schemas.survey_attach import SurveyAttachInput, SurveyAttachOutput
+
+    data = SurveyAttachInput(
+        first_name="Zztest", last_name="Attach", dob="01/02/1990", phone="5055550100",
+        clinician_name="Zz Clinician", pdf_url="https://crm.example.invalid/survey.pdf",
+        document_name=SURVEY,
+    )
+    pdf = tmp_path / "s.pdf"
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--disable-http2"])
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
+        html = _documents_tab_late([], delay_ms=1000)
+
+        async def route(r):
+            await r.fulfill(status=200, content_type="text/html", body=html)
+
+        await ctx.route(re.compile(r"https://www\.therapynotes\.com/.*"), route)
+        await page.goto(CHART_URL, wait_until="domcontentloaded")
+
+        async def attach_once():
+            ex = SurveyAttachExecutor(runtime=None, credentials=None)
+            ex._start_time = time.time()
+            ex._logs, ex._pending, ex._already_on_chart = [], {}, False
+            ex._chart_url = CHART_URL
+            ex._page = page
+            mech = _bare_executor(page)
+            mech.STEP_TIMEOUT_MS = 2000
+
+            async def _no_dialogs():
+                return False
+
+            async def _click(target, label="element"):
+                await target.click()
+
+            async def _download(url):
+                pdf.write_bytes(b"%PDF-1.4 zz")
+                return str(pdf)
+
+            mech._dismiss_blocking_dialogs = _no_dialogs
+            mech._safe_click = _click
+            mech._download_pdf_to_tempfile = _download
+            ex._mech = mech
+            ok = await ex._phase_attach(data)
+            out = SurveyAttachOutput.success_result(
+                tn_patient_url=CHART_URL, document_name=data.document_name, logs=ex._logs,
+                duration_ms=0, already_on_chart=ex._already_on_chart,
+            )
+            return ok, out, await page.evaluate("window.__uploadClicked"), await page.evaluate("window.__added")
+
+        ok1, out1, clicked1, added1 = await attach_once()
+        ok2, out2, clicked2, added2 = await attach_once()
+        await browser.close()
+
+    assert ok1 and not out1.already_on_chart and clicked1 == 1 and added1 == [SURVEY]
+    assert ok2 and out2.already_on_chart, "the second request should find the first copy"
+    assert clicked2 == 1 and added2 == [SURVEY], "the second request opened the upload dialog"
+    assert out2.status == "success" and out2.message.startswith("Already filed")

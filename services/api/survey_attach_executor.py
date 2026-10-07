@@ -683,7 +683,10 @@ class SurveyAttachExecutor:
                 except Exception:
                     pass
 
-        self._record(phase, "success", f"Attached '{data.document_name}'", t0)
+        self._already_on_chart = getattr(self._mech, "_last_upload_outcome", None) == "already_on_chart"
+        self._record(phase, "success",
+                     f"Already filed: '{data.document_name}' — not uploaded again"
+                     if self._already_on_chart else f"Attached '{data.document_name}'", t0)
         return True
 
     # ------------------------------------------------------------------
@@ -700,6 +703,7 @@ class SurveyAttachExecutor:
         self._truncated = False
         self._current_page = 0
         self._selection_mode = None
+        self._already_on_chart = False
 
         self._mech = TNExecutorV2(self._runtime, self._credentials)
         self._mech._start_time = self._start_time
@@ -728,6 +732,7 @@ class SurveyAttachExecutor:
             tn_patient_url=self._chart_url,
             document_name=data.document_name,
             selection_mode=self._selection_mode,
+            already_on_chart=self._already_on_chart,
             logs=self._logs,
             duration_ms=self._elapsed_ms(),
         )
