@@ -39,6 +39,9 @@ class TNPhaseV2(str, Enum):
     # Runs LAST, after the appointment is booked, and never fails the run: a
     # document that does not file is reported, the patient and the booking stand.
     UPLOAD_DOCUMENTS = "upload_documents"
+    # Patient portal: welcome email + intake documents (2026-10-07). After the
+    # documents, never fails the run (services/api/portal_step.py).
+    PORTAL = "portal"
 
 
 # ============================================================================
@@ -257,6 +260,15 @@ class TNPatientInputV2(BaseModel):
     # predates this field keeps working unchanged.
     documents: List[TNDocumentV2] = Field(default_factory=list, max_length=25)
 
+    # Patient portal (2026-10-07). Which row of the client's documents table
+    # (services/api/portal_documents.py), or None with a reason to skip. A CRM
+    # that predates these sends neither, and the portal step does not run.
+    service_type: Optional[Literal["Minor", "Adolescent", "Individual", "My Partner & Myself", "My Family"]] = None
+    portal_skip_reason: Optional[str] = Field(None, max_length=60)
+    payer_vaccn: bool = False
+    # Default ON: only an explicit false from the CRM (PORTAL_LIVE=true there) sends.
+    portal_dry_run: bool = True
+
     @field_validator("intake_pdf_url", "snapshot_pdf_url")
     @classmethod
     def validate_http_url(cls, v, info):
@@ -394,6 +406,9 @@ class TNExecutorOutputV2(BaseModel):
         None,
         description="TherapyNotes URL for the created patient (on success)",
     )
+    # The portal step's verdict (portalStatus, documents, missing, ...), or None
+    # when the step did not run. Same dict the "portal" callback carries.
+    portal_result: Optional[dict] = None
     document_results: List[TNDocumentResultV2] = Field(
         default_factory=list,
         description="Per-document outcome of the upload_documents phase, in the order sent.",
@@ -415,10 +430,12 @@ class TNExecutorOutputV2(BaseModel):
         tn_patient_url: Optional[str] = None,
         tn_patient_id: Optional[str] = None,
         document_results: Optional[List["TNDocumentResultV2"]] = None,
+        portal_result: Optional[dict] = None,
     ) -> "TNExecutorOutputV2":
         return cls(
             status="success",
             document_results=list(document_results or []),
+            portal_result=portal_result,
             patient_name=patient_name,
             logs=logs,
             screenshot_paths=[

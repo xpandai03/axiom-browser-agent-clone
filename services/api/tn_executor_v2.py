@@ -621,6 +621,18 @@ class TNExecutorV2:
                     metadata=doc_summary["metadata"],
                 )
 
+            # Phase 10 — patient portal: welcome email + intake documents
+            # (services/api/portal_step.py). Only when the CRM asked (a CRM that
+            # predates the fields sends neither service_type nor a skip reason).
+            # Always reported "ok": the verdict is in the metadata, and a portal
+            # problem never undoes or fails the booked run.
+            portal_result = None
+            if getattr(patient, "service_type", None) or getattr(patient, "portal_skip_reason", None):
+                from .portal_step import portal_message, run_portal_phase
+                await self._emit("portal", "started", "Patient portal: welcome email and intake documents")
+                portal_result = await run_portal_phase(self._page, getattr(self, "_tn_patient_url", None), patient)
+                await self._emit("portal", "ok", portal_message(portal_result), metadata=portal_result)
+
             # All phases passed
             duration_ms = self._elapsed_ms()
             logger.info(
@@ -635,6 +647,9 @@ class TNExecutorV2:
             if doc_summary:
                 complete_md.update(doc_summary["metadata"])
                 complete_msg += f"; {doc_summary['message']}"
+            if portal_result:
+                complete_md.update(portal_result)
+                complete_msg += f"; {portal_message(portal_result)}"
             await self._emit("workflow_complete", "ok", complete_msg, metadata=complete_md)
             return TNExecutorOutputV2.success(
                 patient_name=full_name,
@@ -643,6 +658,7 @@ class TNExecutorV2:
                 tn_patient_url=getattr(self, "_tn_patient_url", None),
                 tn_patient_id=getattr(self, "_tn_patient_id", None),
                 document_results=document_results,
+                portal_result=portal_result,
             )
 
         except Exception as e:

@@ -465,6 +465,7 @@ TN_FILES = [
     "services/api/active_count_executor.py", "services/api/routes/therapy_notes.py",
     "services/api/routes/therapy_notes_v2.py", "services/api/routes/survey_attach.py",
     "services/api/routes/active_patients.py", "services/api/routes/active_count.py",
+    "services/api/portal_step.py", "services/api/portal_documents.py",
 ]
 PATIENT_ATTRS = {"first_name", "last_name", "dob", "phone", "email", "address", "zip",
                  "appointment_alert_text", "appointment_date", "appointment_time", "patient_name"}
