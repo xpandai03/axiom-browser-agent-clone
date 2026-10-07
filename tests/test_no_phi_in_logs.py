@@ -446,6 +446,13 @@ async def test_f_survey_attach_leaks_nothing(monkeypatch, capture):
     assert "[ATTACH] request" in logs and "contact_id=1" in logs
     found = [f for f in forbidden if f in logs]
     assert not found, found
+    # The chart URL names one patient's record as directly as a name would
+    # (2026-10-07): never in a log line, success or refusal. The CRM still gets
+    # it in the response.
+    assert "[ATTACH] attached" in logs and "| contact_id=1 |" in logs
+    assert fx.PID not in logs, "the chart record id reached a log line"
+    assert "/app/patients/" not in logs, "a chart URL reached a log line"
+    assert out.tn_patient_url and fx.PID in out.tn_patient_url, "the response must still carry the chart"
 
 
 # ===========================================================================
