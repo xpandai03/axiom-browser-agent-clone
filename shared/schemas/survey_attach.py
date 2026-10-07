@@ -158,18 +158,25 @@ class SurveyAttachOutput(BaseModel):
     # Recorded on success AND on failure, because the question it answers —
     # "why did this refuse?" — is usually asked about a failure.
     selection_mode: Optional[Literal["chart_id", "name"]] = None
+    # True when a document with this exact name was already on the chart, so
+    # nothing was uploaded: a repeat request for the same submission is "already
+    # filed", not a second copy. Still status="success" — the survey IS on the chart.
+    already_on_chart: bool = False
     logs: List[SurveyAttachPhaseLog] = Field(default_factory=list)
     duration_ms: int = 0
 
     @classmethod
     def success_result(cls, *, tn_patient_url, document_name, logs, duration_ms,
-                       selection_mode=None):
+                       selection_mode=None, already_on_chart=False):
         return cls(
             status="success",
-            message=f"Attached '{document_name}' to the verified patient chart",
+            message=(f"Already filed: '{document_name}' was on the verified patient chart; not uploaded again"
+                     if already_on_chart else
+                     f"Attached '{document_name}' to the verified patient chart"),
             tn_patient_url=tn_patient_url,
             document_name=document_name,
             selection_mode=selection_mode,
+            already_on_chart=already_on_chart,
             logs=logs,
             duration_ms=duration_ms,
         )

@@ -2057,35 +2057,52 @@ class TNExecutorV2:
         logger.info(f"[DOC] Downloaded {total} bytes ({mime_type})")
         return path
 
+    # How long the pre-check keeps looking for an existing copy before deciding
+    # there is none. Paid in full only when the document is NOT there.
+    DOCUMENT_PRECHECK_MS = 6000
+
     async def _document_on_chart(self, document_name: str) -> bool:
         """
         Is a document with exactly this name already in the patient's Documents
-        list? Waits briefly for the list to render; an empty list is "no".
-        The names read here stay in memory — none is logged.
+        list?
+
+        POLLS FOR THE NAME, not for "any row". A patient record carries other
+        tables whose rows share tr.Row, so waiting for any row was satisfied
+        before the Documents list had loaded; one read then found nothing and a
+        second copy was filed (1059 and 1061, 2026-10-01). Now the list is read
+        every half second until this name appears or DOCUMENT_PRECHECK_MS
+        passes. Each row is matched on its name cell AND on its whole text, with
+        the same exact-name rule (document_row_matches) either way.
+
+        The names read here stay in memory. The log line carries counts only.
         """
         rows_sel = ", ".join(SELECTORS_V2["document_list_rows"])
-        await self._poll_condition(
-            condition_fn=lambda: self._rows_present(rows_sel),
-            description="documents list rendered",
-            timeout_ms=4000,
-        )
-        try:
-            texts = await self._page.evaluate(
-                """(sel) => [...document.querySelectorAll(sel)].map(tr => {
-                     const cell = tr.querySelector('td.v-align-top') || tr.querySelector('td');
-                     return (cell ? cell.innerText : tr.innerText) || '';
-                   })""",
-                rows_sel,
-            )
-        except Exception:
-            return False
-        return any(document_row_matches(t, document_name) for t in texts or [])
-
-    async def _rows_present(self, rows_sel: str) -> bool:
-        try:
-            return await self._page.locator(rows_sel).count() > 0
-        except Exception:
-            return False
+        started = time.time()
+        deadline = started + self.DOCUMENT_PRECHECK_MS / 1000
+        rows_seen = 0
+        while True:
+            try:
+                texts = await self._page.evaluate(
+                    """(sel) => [...document.querySelectorAll(sel)].map(tr => {
+                         const cell = tr.querySelector('td.v-align-top') || tr.querySelector('td');
+                         return [(cell ? cell.innerText : '') || '', tr.innerText || ''];
+                       })""",
+                    rows_sel,
+                )
+            except Exception:
+                texts = []
+            rows_seen = len(texts or [])
+            if any(document_row_matches(t, document_name) for pair in texts or [] for t in pair):
+                logger.info(
+                    f"[UPLOAD] pre-check rows={rows_seen} match=yes "
+                    f"waited={int((time.time() - started) * 1000)}ms"
+                )
+                return True
+            if time.time() >= deadline:
+                break
+            await asyncio.sleep(0.5)
+        logger.info(f"[UPLOAD] pre-check rows={rows_seen} match=no waited={self.DOCUMENT_PRECHECK_MS}ms")
+        return False
 
     async def _close_upload_dialog(self) -> None:
         try:

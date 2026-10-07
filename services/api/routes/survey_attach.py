@@ -63,7 +63,8 @@ async def _attach_survey_to_chart(request: SurveyAttachInput):
             # would (see the request line above). The CRM gets it in the
             # response; the log keeps the correlation ids.
             logger.info(
-                f"[ATTACH] attached '{result.document_name}' | contact_id={request.contact_id} "
+                f"[ATTACH] {'already filed' if result.already_on_chart else 'attached'} "
+                f"'{result.document_name}' | contact_id={request.contact_id} "
                 f"| selected_by={result.selection_mode}"
             )
         else:
