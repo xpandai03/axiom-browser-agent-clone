@@ -59,8 +59,11 @@ async def _attach_survey_to_chart(request: SurveyAttachInput):
             await runtime.close()
 
         if result.status == "success":
+            # No chart URL: it names one patient's record as directly as a name
+            # would (see the request line above). The CRM gets it in the
+            # response; the log keeps the correlation ids.
             logger.info(
-                f"[ATTACH] attached '{result.document_name}' | url={result.tn_patient_url} "
+                f"[ATTACH] attached '{result.document_name}' | contact_id={request.contact_id} "
                 f"| selected_by={result.selection_mode}"
             )
         else:
