@@ -171,3 +171,39 @@ def names_agree(a, b) -> bool:
     if not left:
         return False
     return bool(left & set(name_keys(b)))
+
+
+def legal_name_key(raw) -> str:
+    """
+    The LEGAL reading of a name, for GROUPING rows into one person — never for
+    matching (names_agree stays the matching rule). Port of legalNameKey() in
+    the CRM's server/survey/matching.ts (2026-10-07).
+
+    TherapyNotes renders a patient with a preferred name as "Preferred (Legal)
+    Last", so a group with words after it holds the legal given name and the
+    legal reading is that group plus the words after it. A trailing group
+    annotates and is ignored; a name with no group is its own legal reading.
+    Grouping on the preferred reading instead would fold twins both rendered
+    "Minor (…) <Last>" with one birthday into one person.
+
+        "Minor (Rowan) Thistlewood" -> "rowan thistlewood"
+        "Rosalind Ashgrove (dad)"   -> "ashgrove rosalind"
+        "Ashgrove, Rosalind"        -> "ashgrove rosalind"
+    """
+    s = str(raw or "")
+    segments: List[Tuple[str, List[str]]] = []
+    pos = 0
+    for m in _GROUP_RE.finditer(s):
+        if m.start() > pos:
+            segments.append(("w", _tokens(s[pos:m.start()])))
+        segments.append(("g", _tokens(m.group(1))))
+        pos = m.end()
+    if pos < len(s):
+        segments.append(("w", _tokens(s[pos:])))
+    for i, (kind, toks) in enumerate(segments):
+        if kind != "g" or not toks:
+            continue
+        after = [t for k, ts in segments[i + 1:] if k == "w" for t in ts]
+        if after:
+            return _key(toks + after)
+    return name_key(s)

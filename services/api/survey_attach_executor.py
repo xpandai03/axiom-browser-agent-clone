@@ -26,7 +26,7 @@ import re
 import time
 from typing import List, Optional
 
-from shared.name_keys import names_agree
+from shared.name_keys import legal_name_key, names_agree
 from shared.schemas.survey_attach import (
     SurveyAttachInput,
     SurveyAttachOutput,
@@ -135,6 +135,14 @@ def clinician_refusal_message(sent: Optional[str], assignments: List[str]) -> st
         f"The clinician named on the survey ('{clinician_for_comparison(sent) or 'none'}') "
         f"is not among this patient's {len(assignments)} chart assignment(s): {shown}."
     )
+
+
+def clinicians_overlap(a: List[str], b: List[str]) -> bool:
+    """Do two charts share a clinician? Same token rule as clinician_on_chart,
+    compared as equal token sets ("Jones, Ty, LMHC" == "Ty Jones, LMHC")."""
+    left = [frozenset(_name_tokens(x or "")) for x in a]
+    right = {frozenset(_name_tokens(y or "")) for y in b}
+    return any(t and t in right for t in left)
 
 
 def _digits(value: Optional[str]) -> str:
@@ -287,6 +295,25 @@ class SurveyAttachExecutor:
         refused, as possibly truncated.
         """
         phase, t0 = SurveyAttachPhase.SEARCH, time.time()
+        problem = await self._open_patients_page()
+        if problem:
+            return self._refuse(phase, "search_ui_not_found", problem, t0)
+
+        await self._run_search(data.last_name)
+        total = sum(len(p) for p in self._pages)
+        self._row_count = total
+        # Counts only.
+        logger.info(
+            f"[ATTACH] search mode=surname activity=active pages={len(self._pages)} "
+            f"rows={total} more_pages={'yes' if self._truncated else 'no'}"
+        )
+        self._record(phase, "success",
+                     f"Search returned {total} row(s) over {len(self._pages)} page(s)", t0)
+        return True
+
+    async def _open_patients_page(self) -> Optional[str]:
+        """The Patients page with Activity = Active and Assigned To = any set.
+        None when ready, else what was missing."""
         page = self._page
         await page.goto(PATIENTS_URL, wait_until="domcontentloaded")
         try:
@@ -300,8 +327,7 @@ class SurveyAttachExecutor:
         box = await self._first("patients_page_search_input")
         btn = await self._first("patients_page_search_submit")
         if box is None or btn is None:
-            return self._refuse(phase, "search_ui_not_found",
-                                "Patients-page search controls not found", t0)
+            return "Patients-page search controls not found"
 
         try:
             await page.select_option(SEL_ACTIVITY_FILTER, value=ACTIVITY_ACTIVE,
@@ -311,20 +337,8 @@ class SurveyAttachExecutor:
                                      timeout=self.NAV_TIMEOUT_MS)
             await self._settle(4000)
         except Exception:
-            return self._refuse(phase, "search_ui_not_found",
-                                "Patients-page filters (Activity, Assigned To) not found", t0)
-
-        await self._run_search(data.last_name)
-        total = sum(len(p) for p in self._pages)
-        self._row_count = total
-        # Counts only.
-        logger.info(
-            f"[ATTACH] search mode=surname activity=active pages={len(self._pages)} "
-            f"rows={total} more_pages={'yes' if self._truncated else 'no'}"
-        )
-        self._record(phase, "success",
-                     f"Search returned {total} row(s) over {len(self._pages)} page(s)", t0)
-        return True
+            return "Patients-page filters (Activity, Assigned To) not found"
+        return None
 
     async def _settle(self, timeout_ms: int = 6000) -> None:
         """Wait for the results container, then a short settle. Never networkidle:
@@ -502,11 +516,16 @@ class SurveyAttachExecutor:
                                 "No patient matched this name in TherapyNotes", t0)
 
         if len(found) > 1:
-            return self._refuse(
-                phase, "multiple_candidates",
-                f"{len(found)} patients share this name AND date of birth. The "
-                "search results carry nothing else to separate them; attach this "
-                "document by hand after confirming which record is correct.", t0)
+            # SEVERAL ROWS, ONE LEGAL NAME + DATE OF BIRTH: possibly one patient
+            # listed once per clinician (the CRM's rule since 2026-10-07, PR #18).
+            # Different legal names are different people and refuse as before.
+            if len({legal_name_key(c.get("name")) for _, c in found}) > 1:
+                return self._refuse(
+                    phase, "multiple_candidates",
+                    f"{len(found)} patients share this name AND date of birth. The "
+                    "search results carry nothing else to separate them; attach this "
+                    "document by hand after confirming which record is correct.", t0)
+            return await self._select_among_rows_of_one_patient(data, found, want_name, want_dob, phase, t0)
 
         page_index, row = found[0]
         if page_index != self._current_page:
@@ -541,6 +560,111 @@ class SurveyAttachExecutor:
 
         self._chart_url = self._page.url
         self._record(phase, "success", "Opened the single matching patient chart", t0)
+        return True
+
+    async def _open_match(self, data: SurveyAttachInput, page_index: int, occurrence: int,
+                          want_name: str, want_dob: Optional[str]) -> bool:
+        """
+        Open the `occurrence`-th name + DOB match on result page `page_index`,
+        starting from the Patients page. A result's link is only valid in the
+        page load it came from, so the search is run again each time and the row
+        is found again by the same rule and position.
+        """
+        if await self._open_patients_page():
+            return False
+        cells = await self._run_search(data.last_name, stop_at_page=page_index)
+        again, _ = self._narrow(cells, want_name, want_dob)
+        if len(again) <= occurrence:
+            return False
+        m = _RECORD_URL_RE.search(again[occurrence].get("href") or "")
+        if not m:
+            return False
+        pid = m.group(1)
+        await self._page.click(
+            f"{SELECTORS_ATTACH['patients_page_result_anchor'][0]}[href*='{pid}']"
+        )
+        await asyncio.sleep(4)
+        landed = _RECORD_URL_RE.search(self._page.url or "")
+        if not landed or landed.group(1) != pid:
+            return False
+        self._chart_url = self._page.url
+        return True
+
+    async def _read_chart_clinicians(self) -> Optional[List[str]]:
+        """The open chart's clinician assignments (Clinicians tab), or None when
+        the tab is missing. Same selectors and rendering as _phase_verify."""
+        tab = await self._first("chart_clinicians_tab")
+        if tab is None:
+            return None
+        await tab.click()          # hash tab: a content swap, not a navigation or a write
+        await asyncio.sleep(3)
+        try:
+            return [" ".join((t or "").split())[:80]
+                    for t in await self._page.locator(SELECTORS_ATTACH["chart_clinicians"][0]).all_inner_texts()][:10]
+        except Exception:
+            return []
+
+    async def _select_among_rows_of_one_patient(self, data: SurveyAttachInput, found, want_name: str,
+                                                want_dob: Optional[str], phase, t0) -> bool:
+        """
+        Several rows share one legal name + date of birth. The results table
+        carries no reliable clinician cell (recon: its trailing cell is numeric),
+        so each row's clinicians are read where they are proven readable — the
+        chart's Clinicians tab, read-only, the same read _phase_verify makes.
+
+          - Two rows under the SAME clinician: a duplicate chart. Refuse
+            multiple_candidates, as before. (One record listed twice cannot be
+            told apart from two records — ids change between page loads — so
+            that case refuses too, which is the safe direction.)
+          - Otherwise one patient under several clinicians: open the row whose
+            clinicians include the survey's therapist (the shared word rule,
+            clinician_on_chart). None does: clinician_mismatch, as today.
+
+        _phase_verify then runs its four checks on the opened chart, unchanged.
+        Staff names only in logs and messages; counts otherwise.
+        """
+        sets: List[List[str]] = []
+        for k, (page_index, _) in enumerate(found):
+            occurrence = sum(1 for p, _ in found[:k] if p == page_index)
+            if not await self._open_match(data, page_index, occurrence, want_name, want_dob):
+                return self._refuse(phase, "chart_not_opened",
+                                    "The search results changed while the agent was "
+                                    "reading them; attach this document by hand.", t0)
+            names = await self._read_chart_clinicians()
+            if names is None:
+                return self._refuse(phase, "field_unreadable",
+                                    "Clinicians tab not found on the chart", t0)
+            sets.append(names)
+
+        if any(clinicians_overlap(sets[i], sets[j])
+               for i in range(len(sets)) for j in range(i + 1, len(sets))):
+            return self._refuse(
+                phase, "multiple_candidates",
+                f"{len(found)} records share this name and date of birth, and two of "
+                "them are under the same clinician: a duplicate chart. Attach this "
+                "document by hand after confirming which record is correct.", t0)
+
+        picks = [i for i, names in enumerate(sets) if clinician_on_chart(data.clinician_name, names)]
+        logger.info(f"[ATTACH] one patient on {len(found)} rows (legal name + DOB), "
+                    f"clinicians differ; rows under the survey's therapist={len(picks)}")
+        if not picks:
+            return self._refuse(phase, "clinician_mismatch",
+                                clinician_refusal_message(data.clinician_name, [n for ns in sets for n in ns]), t0)
+        if len(picks) > 1:
+            return self._refuse(
+                phase, "multiple_candidates",
+                f"The therapist named on the survey is on {len(picks)} of the {len(found)} "
+                "records sharing this name and date of birth; attach by hand.", t0)
+
+        k = picks[0]
+        page_index = found[k][0]
+        occurrence = sum(1 for p, _ in found[:k] if p == page_index)
+        if not await self._open_match(data, page_index, occurrence, want_name, want_dob):
+            return self._refuse(phase, "chart_not_opened",
+                                "The search results changed while the agent was "
+                                "reading them; attach this document by hand.", t0)
+        self._record(phase, "success",
+                     f"Opened the patient's chart under the survey's therapist ({len(found)} rows, one patient)", t0)
         return True
 
     async def _phase_verify(self, data: SurveyAttachInput) -> bool:

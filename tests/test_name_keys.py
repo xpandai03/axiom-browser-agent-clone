@@ -13,7 +13,7 @@ table. If a case here changes, the CRM's copy changes with it.
 
 import sys
 
-from shared.name_keys import name_key, name_keys, names_agree
+from shared.name_keys import legal_name_key, name_key, name_keys, names_agree
 
 passed = 0
 failed = 0
@@ -139,6 +139,22 @@ PARITY = [
 ]
 for raw, want in PARITY:
     eq(f"parity: {raw!r}", list(name_keys(raw)), want)
+
+
+# legal_name_key: the grouping reading, ported from the CRM's legalNameKey
+# (server/survey/matching.ts, 2026-10-07). Same cases asserted there.
+LEGAL = [
+    ("Rosalind Ashgrove", "ashgrove rosalind"),
+    ("Ashgrove, Rosalind", "ashgrove rosalind"),
+    ("Minor (Rowan) Thistlewood", "rowan thistlewood"),
+    ("Rosalind Ashgrove (dad)", "ashgrove rosalind"),
+    ("Siobhán O'Callaghan", "ocallaghan siobhan"),
+    ("Minor () Thistlewood", "minor thistlewood"),
+]
+for raw, want in LEGAL:
+    eq(f"legal: {raw!r}", legal_name_key(raw), want)
+check("twins under one preferred name keep two legal keys",
+      legal_name_key("Minor (Rowan) Thistlewood") != legal_name_key("Minor (Robin) Thistlewood"))
 
 
 print(f"\n{'=' * 60}")
