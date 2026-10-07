@@ -64,7 +64,10 @@ async def main():
         r.check("refused", ok is False)
         r.check("reason is multiple_candidates",
                 ex._pending.get("reason") == "multiple_candidates", ex._pending.get("reason"))
-        r.check("no chart opened", ex._chart_url is None)
+        # Since 2026-10-07 both rows' charts are READ to compare clinicians (same
+        # clinician here, so a duplicate). The id still chooses nothing.
+        r.check("the id did not choose: both charts were read", getattr(ex, "_opened", None) == ["ZzTwinA", "ZzTwinB"],
+                getattr(ex, "_opened", None))
         await page.close()
 
         print("\n[4] With and without an id -> the same chart")

@@ -92,7 +92,7 @@ def results_page(rows, next_href=None, activity="inactive", assignment="zzclin")
     </body></html>"""
 
 
-def serve_search(rows, served, delay_s=0.0, page_size=20):
+def serve_search(rows, served, delay_s=0.0, page_size=20, charts=None, opened=None):
     """
     A route handler that behaves like the Patients page.
 
@@ -107,7 +107,13 @@ def serve_search(rows, served, delay_s=0.0, page_size=20):
     async def handler(route, request):
         u = urlparse(request.url)
         if "/patients/edit/" in u.path:
-            return await route.fulfill(status=200, content_type="text/html", body=chart_page())
+            # Each row's own chart: `charts` maps a record id to its clinicians
+            # (default: the survey's). `opened` records every chart served.
+            pid = u.path.rstrip("/").split("/")[-1]
+            if opened is not None:
+                opened.append(pid)
+            clins = (charts or {}).get(pid, (CLINICIAN,))
+            return await route.fulfill(status=200, content_type="text/html", body=chart_page(clinicians=clins))
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if "q" not in q:
             return await route.fulfill(status=200, content_type="text/html", body=results_page([]))
@@ -196,7 +202,7 @@ def make_ex(page):
 ORIGIN = "https://www.therapynotes.com"
 
 
-async def run_search_select(browser, rows, data, delay_s=0.0):
+async def run_search_select(browser, rows, data, delay_s=0.0, charts=None):
     """
     Drive the REAL search and then select, against a Patients page SERVED ON
     TN'S ORIGIN (see serve_search), so the form submit and the pager are real
@@ -204,11 +210,12 @@ async def run_search_select(browser, rows, data, delay_s=0.0):
     received are on ex._served.
     """
     page = await browser.new_page(viewport={"width": 1400, "height": 1000})
-    served = []
-    await page.route(f"{ORIGIN}/**", serve_search(rows, served, delay_s))
+    served, opened = [], []
+    await page.route(f"{ORIGIN}/**", serve_search(rows, served, delay_s, charts=charts, opened=opened))
     await page.goto(f"{ORIGIN}/app/patients/")
     ex = make_ex(page)
     ex._served = served
+    ex._opened = opened
     ok = await ex._phase_search(data) and await ex._phase_select(data)
     return ex, page, ok
 
@@ -294,13 +301,15 @@ async def main():
                     ex._chart_url)
             await page.close()
 
-            print("\n[I] Several results NOT narrowing -> multiple_candidates, no chart opened")
+            print("\n[I] Two rows, one legal name + DOB, the SAME clinician -> multiple_candidates (duplicate chart)")
             rows = [("Zzid1", f"{FIRST} {LAST}", DOB_SHORT), ("Zzid2", f"{FIRST} {LAST}", DOB_SHORT)]
             ex, page, ok = await run_search_select(browser, rows, make_input())
             r.check("refused", ok is False)
             r.check("reason is multiple_candidates",
                     ex._pending.get("reason") == "multiple_candidates", ex._pending.get("reason"))
-            r.check("no chart opened", ex._chart_url is None)
+            r.check("…naming the same clinician as the reason",
+                    "same clinician" in str(ex._pending.get("message")), ex._pending.get("message"))
+            r.check("each chart was read once to compare clinicians", ex._opened == ["Zzid1", "Zzid2"], ex._opened)
             await page.close()
 
             print("\n[J] A FULL page and NO further page -> proceeds (the pager decides, not the count)")
@@ -345,14 +354,53 @@ async def main():
             r.check("no chart opened", ex._chart_url is None)
             await page.close()
 
-            print("\n[J5] The same name and DOB on page 1 AND page 3 -> multiple_candidates")
+            print("\n[J5] The same name and DOB on page 1 AND page 3, same clinician -> multiple_candidates")
             rows = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i in (2, 41) else "1/1/1971")
                     for i in range(45)]
             ex, page, ok = await run_search_select(browser, rows, make_input())
             r.check("refused", ok is False)
             r.check("reason is multiple_candidates",
                     ex._pending.get("reason") == "multiple_candidates", ex._pending.get("reason"))
-            r.check("no chart opened", ex._chart_url is None)
+            r.check("both charts were read, across pages", ex._opened == ["Zzid2", "Zzid41"], ex._opened)
+            await page.close()
+
+            # ---- One patient, several rows, different clinicians (2026-10-07) ----
+            print("\n[M] Two rows of one patient under DIFFERENT clinicians -> opens the one under the therapist")
+            rows = [("Zzid1", f"{FIRST} {LAST}", DOB_SHORT), ("Zzid2", f"{FIRST} {LAST}", DOB_SHORT)]
+            ex, page, ok = await run_search_select(
+                browser, rows, make_input(), charts={"Zzid1": (OTHER_CLIN,), "Zzid2": (CLINICIAN,)})
+            r.check("proceeds", ok is True, ex._pending)
+            r.check("the chart left open is the therapist's row", (ex._chart_url or "").rstrip("/").endswith("Zzid2"), ex._chart_url)
+            r.check("…and verify still passes all four checks on it",
+                    await ex._phase_verify(make_input()) is True, ex._pending)
+            await page.close()
+
+            print("\n[M2] Same, the therapist's row FIRST -> opens row 1")
+            ex, page, ok = await run_search_select(
+                browser, rows, make_input(), charts={"Zzid1": (CLINICIAN,), "Zzid2": (OTHER_CLIN,)})
+            r.check("proceeds to row 1", ok is True and (ex._chart_url or "").rstrip("/").endswith("Zzid1"), ex._chart_url)
+            await page.close()
+
+            print("\n[M3] Rows on page 1 and page 3, the therapist's on page 3 -> opens it")
+            rows45 = [(f"Zzid{i}", f"{FIRST} {LAST}", DOB_SHORT if i in (2, 41) else "1/1/1971") for i in range(45)]
+            ex, page, ok = await run_search_select(
+                browser, rows45, make_input(), charts={"Zzid2": (OTHER_CLIN,), "Zzid41": (CLINICIAN,)})
+            r.check("proceeds to the page-3 row", ok is True and (ex._chart_url or "").rstrip("/").endswith("Zzid41"), ex._chart_url)
+            await page.close()
+
+            print("\n[M4] Rows under different clinicians, NONE the therapist -> clinician_mismatch")
+            ex, page, ok = await run_search_select(
+                browser, rows, make_input(), charts={"Zzid1": (OTHER_CLIN,), "Zzid2": ("Zzthird Zzclinician",)})
+            r.check("refused clinician_mismatch", ok is False and ex._pending.get("reason") == "clinician_mismatch", ex._pending)
+            r.check("…naming both sides", OTHER_CLIN in str(ex._pending.get("message")), ex._pending.get("message"))
+            await page.close()
+
+            print("\n[M5] Different LEGAL names, one reading and DOB in common -> multiple_candidates, nothing opened")
+            twins = [("Zzid1", f"Minor (Zzrowan) {LAST}", DOB_SHORT), ("Zzid2", f"Minor (Zzrobin) {LAST}", DOB_SHORT)]
+            ex, page, ok = await run_search_select(
+                browser, twins, make_input(first_name="Minor"), charts={"Zzid1": (OTHER_CLIN,), "Zzid2": (CLINICIAN,)})
+            r.check("refused multiple_candidates", ok is False and ex._pending.get("reason") == "multiple_candidates", ex._pending)
+            r.check("no chart opened", ex._opened == [] and ex._chart_url is None, ex._opened)
             await page.close()
 
             print("\n[J6] A search that takes 5s to come back -> still found")
