@@ -76,7 +76,6 @@ logger = logging.getLogger(__name__)
 SELECTORS = {
     **TN_LOGIN,
     "dashboard_indicator": TN_DASHBOARD_MARKERS,
-    "patients_link": TN_NAV["patients_link"],
     "patients_page_indicator": TN_NAV["patients_page_indicator"],
     "new_patient_button": TN_NAV["new_patient_button"],
 }
@@ -123,7 +122,6 @@ SELECTORS_V2 = {
     ],
 
     # ---- Scheduling navigation ----
-    "scheduling_nav": TN_NAV["scheduling_nav"],
 
     # ---- New appointment dialog ----
     "new_appointment_button": [
@@ -987,11 +985,12 @@ class TNExecutorV2:
             # (tn_selectors.DASHBOARD_MARKERS; CSS only, no :has-text).
             marker_seen = False
             try:
-                await self._page.wait_for_selector(
-                    tn_selectors.DASHBOARD_SELECTOR,
-                    state="visible",
-                    timeout=30_000,
-                )
+                # ANY visible marker. page.wait_for_selector checks only the
+                # first match in page order, and TherapyNotes now renders a
+                # hidden a[href='/app/patients/'] first (tn_selectors).
+                await self._page.locator(tn_selectors.DASHBOARD_SELECTOR).filter(
+                    visible=True
+                ).first.wait_for(state="visible", timeout=30_000)
                 marker_seen = True
             except Exception:
                 logger.warning("[LOGIN] Dashboard markers not visible within 30s — diagnosing failure")
@@ -1140,27 +1139,6 @@ class TNExecutorV2:
 
         return None
 
-    async def _find_patients_list_link(self, timeout_ms: int = 10_000):
-        """The first VISIBLE link, by SELECTORS['patients_link'] order, whose href
-        is the Patients list (tn_selectors.patients_link_is_list). None if none
-        appears within `timeout_ms`."""
-        deadline = time.time() + timeout_ms / 1000
-        while True:
-            for sel in SELECTORS["patients_link"]:
-                try:
-                    visible = self._page.locator(sel).filter(visible=True)
-                    for i in range(min(await visible.count(), 5)):
-                        loc = visible.nth(i)
-                        if tn_selectors.patients_link_is_list(
-                            await loc.get_attribute("href", timeout=2000)
-                        ):
-                            return loc
-                except Exception:
-                    continue
-            if time.time() >= deadline:
-                return None
-            await asyncio.sleep(0.5)
-
     async def _clear_post_login_notices(self) -> None:
         """
         After a confirmed login: note how long the password has left, then close
@@ -1235,50 +1213,37 @@ class TNExecutorV2:
     # ========================================================================
 
     async def _phase_navigate(self) -> bool:
-        """Navigate sidebar → Patients page, confirm + New Patient button exists."""
+        """Open the Patients list by its URL; confirm it and its + New Patient button."""
         phase = TNPhaseV2.NAVIGATE
         phase_start = time.time()
         logger.info("=" * 70)
-        logger.info("PHASE 2: NAVIGATE — Sidebar → Patients")
+        logger.info("PHASE 2: NAVIGATE — Patients list (by URL)")
         logger.info("=" * 70)
 
         try:
-            # Let the dashboard settle after login before grabbing sidebar links.
-            # Avoids a stale-ElementHandle race where the SPA re-renders the
-            # sidebar between resolve and click. Timeout is non-fatal.
-            try:
-                await self._page.wait_for_load_state("networkidle", timeout=1500)
-            except Exception:
-                logger.info("[NAVIGATE] networkidle wait timed out — continuing")
-
             # Pre-clear any modal overlays that may have appeared after login
             await self._dismiss_blocking_dialogs()
 
-            # Step 1: Click "Patients" link in the sidebar.
-            # Use a Locator (auto-re-resolves on DOM re-render) instead of a
-            # cached ElementHandle, which detaches if the SPA repaints mid-click.
-            # Only a link whose href IS the Patients list is clicked. The
-            # dashboard links into individual charts too; the old catch-all
-            # a[href*='patient'] matched one of those on 2026-10-14.
-            # And only a VISIBLE one: TherapyNotes renders a second, hidden
-            # a[href='/app/patients/'] (2026-10-15 03:56Z: .first picked it and
-            # the click timed out). Polled, since the menu can render late.
-            patients_loc = await self._find_patients_list_link(timeout_ms=10_000)
-            if patients_loc is None:
-                return await self._fail_phase(
-                    phase, "navigation_failed",
-                    "Patients link not found in sidebar",
-                    phase_start,
-                )
-            await patients_loc.click(timeout=self.STEP_TIMEOUT_MS)
-            logger.info("[NAVIGATE] Clicked Patients")
+            # Step 1: open the Patients list by URL — the nightly pull's way.
+            # The top menu is never clicked: the refreshed TherapyNotes renders
+            # hidden duplicates of its links, and on 2026-10-15 03:56Z a click
+            # on the hidden Patients link timed out.
+            await self._page.goto(
+                tn_selectors.PATIENTS_URL,
+                wait_until="domcontentloaded",
+                timeout=self.STEP_TIMEOUT_MS,
+            )
+            logger.info("[NAVIGATE] Opened the Patients list URL")
 
-            # Step 2: Wait for the Patients page to load
+            # Step 2: loaded = an element only the Patients list has (the
+            # clinician filter the pull waits for, or the search box).
             patients_page = await self._resolve_selector("patients_page_indicator")
             if not patients_page:
+                landed = re.sub(r"/(edit|view|detail)/[^/?#]+", r"/\1/<id>",
+                                (self._page.url or "").split("?")[0])
                 return await self._fail_phase(
                     phase, "navigation_failed",
-                    "Patients page did not load after clicking Patients link",
+                    f"Patients list did not load (landed on {landed})",
                     phase_start,
                 )
             logger.info("[NAVIGATE] Patients page loaded")
@@ -2460,7 +2425,7 @@ class TNExecutorV2:
         try:
             # Navigate to scheduling
             await page.goto(
-                "https://www.therapynotes.com/app/scheduling/",
+                tn_selectors.SCHEDULING_URL,
                 wait_until="domcontentloaded",
                 timeout=self.STEP_TIMEOUT_MS,
             )

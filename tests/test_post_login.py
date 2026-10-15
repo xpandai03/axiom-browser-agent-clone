@@ -16,10 +16,12 @@ synthetic):
   [E] a "What's New" notice is closed through its plain close control only;
       its settings-style button is never pressed
   [F] a notice with no plain close control is left open, nothing pressed
-  [G] Patients link: a chart link that says "Patients" is never clicked; a
-      hidden duplicate of the real link is skipped (2026-10-15 03:56Z)
-  [H] the selector smoke: five signals pass on the mock practice; a missing
-      chart tab reads "TN layout changed"; an expired password says so
+  [G] navigate opens the Patients list by URL (no menu click, so the hidden
+      duplicate link of 2026-10-15 03:56Z is irrelevant); a chart link reading
+      "Patients" is never clicked
+  [H] the selector smoke: six signals pass on the mock practice; a missing
+      chart tab reads "TN layout changed"; an expired password says so; a
+      "+ New" that opens no dialog fails at scheduling_dialog
   [I] the smoke's daily schedule is 03:00 America/Denver across DST
 
 Run:  <venv>/bin/python -m tests.test_post_login
@@ -137,6 +139,16 @@ NEW_PATIENT_FORM = f"""<html><head><title>New Patient | TherapyNotes</title></he
 <psy-button class="button-save">Save New Patient</psy-button></body></html>"""
 
 
+SCHEDULING = f"""<html><head><title>Scheduling | TherapyNotes</title></head><body>{MENU}
+<psy-button id="ButtonCreateAppointment" onclick="document.getElementById('dlg').style.display='block'">+ New</psy-button>
+<div id="dlg" style="display:none"><input id="CalendarEntryEditor__PatientSelect">
+<button class="DialogCloseButton" onclick="document.getElementById('dlg').style.display='none'">x</button></div>
+</body></html>"""
+
+SCHEDULING_NO_DIALOG = f"""<html><head><title>Scheduling | TherapyNotes</title></head><body>{MENU}
+<psy-button id="ButtonCreateAppointment">+ New</psy-button></body></html>"""
+
+
 # --- harness -----------------------------------------------------------------
 
 class _Cap(logging.Handler):
@@ -183,7 +195,8 @@ async def login_onto(browser, landing_html):
     return ex, page, ok
 
 
-def serve_practice(page, chart_html):
+def serve_practice(page, chart_html, scheduling_html=None):
+    scheduling_html = scheduling_html or SCHEDULING
     async def handler(route):
         url = route.request.url
         path = url.replace(TN, "")
@@ -193,15 +206,17 @@ def serve_practice(page, chart_html):
             body = NEW_PATIENT_FORM
         elif path.startswith("/app/patients/"):
             body = patients_page(RESULT_ROWS if "q=" in path else "")
+        elif path.startswith("/app/scheduling/"):
+            body = scheduling_html
         else:
             body = DASHBOARD.replace("{extra}", "")
         await route.fulfill(status=200, content_type="text/html", body=body)
     return page.route(f"{TN}/**", handler)
 
 
-async def run_smoke(browser, chart_html, login_ok=True, login_reason=None):
+async def run_smoke(browser, chart_html, login_ok=True, login_reason=None, scheduling_html=None):
     page = await browser.new_page(viewport={"width": 1280, "height": 900})
-    await serve_practice(page, chart_html)
+    await serve_practice(page, chart_html, scheduling_html)
     await page.goto(f"{TN}/app/")
     ex = make_ex(page)
 
@@ -235,10 +250,6 @@ async def main():
             S.password_expires_in_days(EXPIRING))
     r.check("'in 5 days' -> 5", S.password_expires_in_days("Your password will expire in 5 days on 10/20") == 5)
     r.check("no notice -> None", S.password_expires_in_days("Dashboard") is None)
-    for href, want in [("/app/patients/", True), ("https://www.therapynotes.com/app/patients/", True),
-                       ("/app/patients", True), ("/app/patients/edit/1L_x/", False),
-                       ("/app/patients/view/abc/", False), (None, False), ("/app/scheduling/", False)]:
-        r.check(f"patients_link_is_list({href!r}) is {want}", S.patients_link_is_list(href) is want)
     for label, want in [("Close", True), ("×", True), ("Got it", True), ("  Not  now ", True),
                         ("Switch to classic navigation", False), ("Update my settings", False),
                         ("Change Password", False), ("Skip to Main Content", False)]:
@@ -250,7 +261,7 @@ async def main():
         print("\n[B] forced password change keeps its menu -> password_expired, not a pass")
         ex, page, ok = await login_onto(browser, EXPIRED)
         r.check("menu markers WERE visible (the 14 Oct false pass)",
-                await page.locator(S.DASHBOARD_SELECTOR).first.is_visible())
+                await page.locator(S.DASHBOARD_SELECTOR).filter(visible=True).count() > 0)
         r.check("login fails", ok is False)
         r.check("reason is password_expired", ex._pending_failure.get("reason") == "password_expired",
                 ex._pending_failure)
@@ -293,7 +304,7 @@ async def main():
         r.check("logged as left open", any("Notice left open" in l for l in cap.lines), cap.lines[-5:])
         await page.close()
 
-        print("\n[G] Patients link: a chart link that says 'Patients' is never clicked")
+        print("\n[G] navigate opens the Patients list by URL; a chart link reading 'Patients' is never clicked")
         page = await browser.new_page()
         await page.route(f"{TN}/**", lambda route: route.fulfill(status=200, content_type="text/html", body=CHART_LINK_ONLY))
         await page.goto(f"{TN}/app/")
@@ -310,15 +321,16 @@ async def main():
         await page.goto(f"{TN}/app/")
         ex = make_ex(page)
         ok = await ex._phase_navigate()
-        r.check("refreshed menu (shadow DOM, hidden duplicate first): navigate reaches the Patients list",
+        r.check("refreshed menu (hidden duplicate first): navigate reaches the Patients list by URL",
                 ok is True, ex._pending_failure)
         r.check("landed on /app/patients/", page.url.rstrip("/").endswith("/app/patients"), page.url)
         await page.close()
 
         print("\n[H] selector smoke")
         res = await run_smoke(browser, chart_page())
-        r.check("all five signals pass", res.status == "pass" and all(res.signals.values()), res.signals)
-        r.check("message 'TN layout ok (5/5)'", res.message == "TN layout ok (5/5)", res.message)
+        r.check("all six signals pass", res.status == "pass" and len(res.signals) == 6
+                and all(res.signals.values()), res.signals)
+        r.check("message 'TN layout ok (6/6)'", res.message == "TN layout ok (6/6)", res.message)
         res = await run_smoke(browser, chart_page(with_clinicians_tab=False))
         r.check("no Clinicians tab -> fail at chart_tab", res.first_failed == "chart_tab", res.signals)
         r.check("message 'TN layout changed: chart tab not found'",
@@ -327,6 +339,9 @@ async def main():
         res = await run_smoke(browser, chart_page(), login_ok=False, login_reason="password_expired")
         r.check("expired password -> dashboard fails, message says password",
                 res.first_failed == "dashboard" and "password expired" in res.message, res.message)
+        res = await run_smoke(browser, chart_page(), scheduling_html=SCHEDULING_NO_DIALOG)
+        r.check("'+ New' opens no dialog -> fail at scheduling_dialog",
+                res.first_failed == "scheduling_dialog", res.signals)
 
         await browser.close()
 

@@ -49,8 +49,6 @@ logger = logging.getLogger(__name__)
 SELECTORS = {
     **tn_selectors.LOGIN,
     "dashboard_indicator": tn_selectors.DASHBOARD_MARKERS,
-    # No catch-all a[href*='patient']: it matched a chart link first (2026-10-14).
-    "patients_link": tn_selectors.NAV["patients_link"],
     "patients_page_indicator": tn_selectors.NAV["patients_page_indicator"],
     "new_patient_button": tn_selectors.NAV["new_patient_button"],
 }
@@ -568,29 +566,28 @@ class TNExecutor:
             if os.environ.get("TN_DEBUG_MODE", "false").lower() == "true":
                 await self._capture_screenshot("login_postsubmit")
 
-            # Positive dashboard detection — the ONLY reliable success signal.
-            # TN's login page is a SPA: the URL stays at /app/login/ even
-            # after successful authentication (verified in production logs
-            # where body showed full dashboard but URL was unchanged). So
-            # URL transitions CANNOT be used as a signal. Instead, wait up
-            # to 30s for any marker that only exists on the authenticated
-            # dashboard. CSS-only selectors — no :has-text, no URL checks.
-            dashboard_selector = (
-                "nav, "
-                "#sidebar, "
-                ".main-nav, "
-                "[data-testid='sidebar'], "
-                "a[href*='/app/home' i], "
-                "a[href*='/app/patients' i], "
-                "a[href*='/app/todo' i], "
-                "a[href*='logout' i]"
-            )
+            # Positive dashboard detection: ANY visible marker
+            # (tn_selectors.DASHBOARD_MARKERS). page.wait_for_selector checks only
+            # the first match in page order, and TherapyNotes now renders a
+            # hidden a[href='/app/patients/'] first.
             try:
-                await self._page.wait_for_selector(
-                    dashboard_selector,
-                    state="visible",
-                    timeout=30_000,
-                )
+                await self._page.locator(tn_selectors.DASHBOARD_SELECTOR).filter(
+                    visible=True
+                ).first.wait_for(state="visible", timeout=30_000)
+                # A marker is necessary, not sufficient: the forced
+                # password-change page keeps its menu.
+                try:
+                    body = await self._page.inner_text("body", timeout=3000)
+                except Exception:
+                    body = ""
+                expired = tn_selectors.password_expired_text(body)
+                if expired:
+                    return await self._fail_phase(
+                        phase, "login_failed",
+                        f"TherapyNotes password expired ('{expired}'). The account owner "
+                        f"must set a new password; the agent never changes a password.",
+                        phase_start,
+                    )
                 logger.info("[LOGIN] Dashboard markers visible — login successful")
                 self._record_log(
                     phase, "success",
@@ -717,34 +714,32 @@ class TNExecutor:
     # ========================================================================
 
     async def _phase_navigate(self) -> bool:
-        """Navigate sidebar → Patients page, confirm + New Patient button exists."""
+        """Open the Patients list by its URL; confirm it and its + New Patient button."""
         phase = TNPhase.NAVIGATE
         phase_start = time.time()
         logger.info("=" * 70)
-        logger.info("PHASE 2: NAVIGATE — Sidebar → Patients")
+        logger.info("PHASE 2: NAVIGATE — Patients list (by URL)")
         logger.info("=" * 70)
 
         try:
             # Pre-clear any modal overlays that may have appeared after login
             await self._dismiss_blocking_dialogs()
 
-            # Step 1: Click "Patients" link in the sidebar
-            patients_link = await self._resolve_selector("patients_link")
-            if not patients_link:
-                return await self._fail_phase(
-                    phase, "navigation_failed",
-                    "Patients link not found in sidebar",
-                    phase_start,
-                )
-            await self._safe_click(patients_link, "Patients link")
-            logger.info("[NAVIGATE] Clicked Patients")
+            # Step 1: open the Patients list by URL; the top menu is never
+            # clicked (hidden duplicate links since 2026-10-13; see V2).
+            await self._page.goto(
+                tn_selectors.PATIENTS_URL,
+                wait_until="domcontentloaded",
+                timeout=self.STEP_TIMEOUT_MS,
+            )
+            logger.info("[NAVIGATE] Opened the Patients list URL")
 
-            # Step 2: Wait for the Patients page to load
+            # Step 2: loaded = an element only the Patients list has
             patients_page = await self._resolve_selector("patients_page_indicator")
             if not patients_page:
                 return await self._fail_phase(
                     phase, "navigation_failed",
-                    "Patients page did not load after clicking Patients link",
+                    "Patients list did not load after opening its URL",
                     phase_start,
                 )
             logger.info("[NAVIGATE] Patients page loaded")

@@ -845,3 +845,67 @@ returns the last result without touching TherapyNotes.
 The CRM's Submissions health line reads only the nightly pull's own activity
 row, which the CRM writes; showing the smoke there is a CRM change (read
 `/selector-smoke/last` in the pull runner and add its message to the line).
+
+---
+
+# 2026-10-15 — navigation audit
+
+TherapyNotes' refreshed menu renders HIDDEN duplicates of its links (a
+`display:none` `a[href='/app/patients/']` ahead of the visible one). Two
+production failures came from it:
+
+- **Login, every flow.** `page.wait_for_selector(<marker union>, state="visible")`
+  checks only the FIRST match in page order. When the hidden link renders
+  first, a loaded dashboard "fails" after 30s as `dashboard_not_loaded`. That
+  is the intermittent failure of 13 October before the password expired (the
+  logged page text was the dashboard's welcome message), and the 2026-10-15
+  04:19Z read-only recon login hit it too (the same session then opened the
+  Scheduling page normally). Fix: wait on
+  `locator(markers).filter(visible=True)`.
+- **Add to Schedule navigate.** #14 clicked `a[href='/app/patients/']` → the
+  hidden one; the click timed out (contact 900841's run, 03:56Z). #15 clicked
+  only a visible link. Now: no flow clicks the top menu at all.
+
+## Every navigation, every flow
+
+| Flow | Step | How it gets there | Loaded signal (an element only that page has) |
+|---|---|---|---|
+| all flows | entry | `goto /app/login/` | `input#PracticeCode` |
+| all flows | login | submit | ANY VISIBLE of `a[href='/app/patients/']`, `a[href='/app/scheduling/']`, `a[href*='/app/todo']` (was: first match of a union incl. bare `nav`) — then no blocking page (password change, MFA, CAPTCHA) |
+| V2 Add to Schedule | navigate | **click menu "Patients" → `goto /app/patients/`** | `select#ctl00_BodyContent_DropDownListSearchAssignment` (the pull's signal) or the search box; then `+ New Patient` present |
+| V2 Add to Schedule | form | click `+ New Patient` (a page button) | `#PatientInformationEditor__FirstNameInput` |
+| V2 Add to Schedule | save | click `psy-button.button-save` | chart URL `/app/patients/edit/<id>/` + chart header (unchanged) |
+| V2 Add to Schedule | intake / snapshot / CRM documents | `goto` the chart URL if not on it, then the chart's Documents hash tab | `Upload Patient File` button; rows `tr.Row`/`tr.AlternateRow` |
+| V2 Add to Schedule | schedule | `goto /app/scheduling/` (already) | `#ButtonCreateAppointment`; dialog `input#CalendarEntryEditor__PatientSelect` |
+| V2 Add to Schedule | portal | `goto` the chart URL, then the Portal hash tab | `#PortalDocumentsPage__ShareDocumentsButton` / `a[data-testid='dynamictable-document-header']` |
+| V1 create | navigate | **click menu "Patients" → `goto /app/patients/`** | as V2 navigate |
+| V1 create | form / save | as V2 | as V2 |
+| survey attach | Patients list | `goto /app/patients/` (already) | search box + search button |
+| survey attach | chart | click the chosen result row's own link | `div#PatientInformation__PatientName` |
+| survey attach | clinicians / upload | Clinicians, Documents hash tabs | `.clinician-assignments .clinician-assignment a`; `Upload Patient File` |
+| nightly pull | Patients list | `goto /app/patients/` (already) | `select#ctl00_BodyContent_DropDownListSearchAssignment` |
+| count pass | Patients list | `goto /app/patients/` (already) | same |
+| selector smoke | six signals | login; V2 navigate (now `goto`); `goto /app/patients/` → `+ New Patient`; `goto /app/scheduling/` → `+ New` | dashboard markers; Patients list signal; search box; chart name + Clinicians tab; first-name field; appointment patient search |
+
+**Conversions made:** V2 navigate and V1 navigate (menu click → `goto
+/app/patients/`). Nothing else clicked the top menu.
+
+**Exceptions (clicked, not a menu link, no usable direct URL):**
+- chart hash tabs (Documents, Clinicians, Portal): in-page content swaps on the
+  chart, not the top menu;
+- `+ New Patient` and the Scheduling page's `+ New`: page buttons that open a
+  form / dialog;
+- a search result's chart link: chart ids change on every page load
+  (docs: tn-chart-id-unstable), so a chart is reached only from its row.
+
+**Loaded signals:** every destination above is confirmed by an element only
+that page has. The one page with no recorded element of its own is the
+DASHBOARD: the 2026-10-15 recon was to capture one and stopped at the login
+bug above. Login therefore keeps three specific, visible-only menu links plus
+the blocking-page check, and every flow's first `goto` then requires its
+destination's own element — so a password page that keeps its menu cannot pass
+beyond login.
+
+**Smoke:** a sixth signal, `scheduling_dialog`, was added (the five did not
+cover the appointment dialog). The chart check opens the count pass's verified
+test record ("Test Anna"; `TN_SMOKE_TEST_RECORD` overrides, e.g. "Test LS").
