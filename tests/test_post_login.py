@@ -16,7 +16,8 @@ synthetic):
   [E] a "What's New" notice is closed through its plain close control only;
       its settings-style button is never pressed
   [F] a notice with no plain close control is left open, nothing pressed
-  [G] Patients link: a chart link that says "Patients" is never clicked
+  [G] Patients link: a chart link that says "Patients" is never clicked; a
+      hidden duplicate of the real link is skipped (2026-10-15 03:56Z)
   [H] the selector smoke: five signals pass on the mock practice; a missing
       chart tab reads "TN layout changed"; an expired password says so
   [I] the smoke's daily schedule is 03:00 America/Denver across DST
@@ -55,7 +56,9 @@ MENU = """<nav><a href="#main">Skip to Main Content</a></nav>
 <script>
 customElements.define('tn-menu', class extends HTMLElement { connectedCallback() {
   const r = this.attachShadow({mode: 'open'});
-  r.innerHTML = '<a href="/app/">Dashboard</a> <a href="/app/patients/">Patients</a> ' +
+  // Live TN (2026-10-15) also renders a HIDDEN a[href='/app/patients/'] first.
+  r.innerHTML = '<a href="/app/patients/" style="display:none">Patients</a> ' +
+                '<a href="/app/">Dashboard</a> <a href="/app/patients/">Patients</a> ' +
                 '<a href="/app/scheduling/">Scheduling</a> <a href="/app/todo/">To-Do</a>';
 }});
 </script>"""
@@ -307,7 +310,8 @@ async def main():
         await page.goto(f"{TN}/app/")
         ex = make_ex(page)
         ok = await ex._phase_navigate()
-        r.check("refreshed menu (shadow DOM): navigate reaches the Patients list", ok is True, ex._pending_failure)
+        r.check("refreshed menu (shadow DOM, hidden duplicate first): navigate reaches the Patients list",
+                ok is True, ex._pending_failure)
         r.check("landed on /app/patients/", page.url.rstrip("/").endswith("/app/patients"), page.url)
         await page.close()
 

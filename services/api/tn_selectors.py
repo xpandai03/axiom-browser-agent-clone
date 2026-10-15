@@ -94,16 +94,19 @@ DASHBOARD_SELECTOR = ", ".join(DASHBOARD_MARKERS)
 # ---------------------------------------------------------------------------
 # Navigation to the Patients list.
 #
-# The link is matched by its exact href first. A candidate is clicked only if
-# its href IS the Patients list (patients_link_is_list): the dashboard carries
-# links into individual charts (/app/patients/edit/<id>/), and the old
-# catch-all "a[href*='patient']" matched one of those first on 2026-10-14.
+# A candidate is clicked only if it is VISIBLE and its href IS the Patients
+# list (patients_link_is_list): the dashboard carries links into individual
+# charts (/app/patients/edit/<id>/), and the old catch-all "a[href*='patient']"
+# matched one of those first on 2026-10-14. The text selectors come first:
+# recon saw exactly one visible "Patients" link. The href selector is last:
+# TherapyNotes renders a second, hidden a[href='/app/patients/'], which .first
+# picked on 2026-10-15 (the click timed out).
 # ---------------------------------------------------------------------------
 NAV = {
     "patients_link": [
-        "a[href='/app/patients/']",
         "a:text-is('Patients')",
         "a:has-text('Patients')",
+        "a[href='/app/patients/']",
     ],
     "patients_page_indicator": [
         "h1:has-text('Patients')",

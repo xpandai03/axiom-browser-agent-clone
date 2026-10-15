@@ -22,3 +22,7 @@ httpx>=0.25.0
 
 # Environment variables
 python-dotenv>=1.0.0
+
+# IANA time zones for zoneinfo: the Playwright base image ships none, and the
+# daily selector smoke runs at 03:00 America/Denver.
+tzdata>=2024.1

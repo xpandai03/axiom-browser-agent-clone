@@ -1140,6 +1140,27 @@ class TNExecutorV2:
 
         return None
 
+    async def _find_patients_list_link(self, timeout_ms: int = 10_000):
+        """The first VISIBLE link, by SELECTORS['patients_link'] order, whose href
+        is the Patients list (tn_selectors.patients_link_is_list). None if none
+        appears within `timeout_ms`."""
+        deadline = time.time() + timeout_ms / 1000
+        while True:
+            for sel in SELECTORS["patients_link"]:
+                try:
+                    visible = self._page.locator(sel).filter(visible=True)
+                    for i in range(min(await visible.count(), 5)):
+                        loc = visible.nth(i)
+                        if tn_selectors.patients_link_is_list(
+                            await loc.get_attribute("href", timeout=2000)
+                        ):
+                            return loc
+                except Exception:
+                    continue
+            if time.time() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+
     async def _clear_post_login_notices(self) -> None:
         """
         After a confirmed login: note how long the password has left, then close
@@ -1239,17 +1260,10 @@ class TNExecutorV2:
             # Only a link whose href IS the Patients list is clicked. The
             # dashboard links into individual charts too; the old catch-all
             # a[href*='patient'] matched one of those on 2026-10-14.
-            patients_loc = None
-            for sel in SELECTORS["patients_link"]:
-                loc = self._page.locator(sel).first
-                try:
-                    if await loc.count() > 0 and tn_selectors.patients_link_is_list(
-                        await loc.get_attribute("href", timeout=2000)
-                    ):
-                        patients_loc = loc
-                        break
-                except Exception:
-                    continue
+            # And only a VISIBLE one: TherapyNotes renders a second, hidden
+            # a[href='/app/patients/'] (2026-10-15 03:56Z: .first picked it and
+            # the click timed out). Polled, since the menu can render late.
+            patients_loc = await self._find_patients_list_link(timeout_ms=10_000)
             if patients_loc is None:
                 return await self._fail_phase(
                     phase, "navigation_failed",
