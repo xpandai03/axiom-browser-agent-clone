@@ -45,6 +45,7 @@ class ActivePatientsPhase(str, Enum):
 # Why one clinician's read failed. Each names something a human can act on.
 ActivePatientsFailureReason = Literal[
     "login_failed",
+    "password_expired",           # TherapyNotes forced a password change at login
     "practice_code_rejected",
     "patients_page_not_found",
     "clinician_dropdown_missing",

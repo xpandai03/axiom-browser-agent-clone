@@ -34,6 +34,7 @@ from shared.schemas.survey_attach import (
     SurveyAttachPhaseLog,
 )
 from shared.schemas.therapy_notes_v2 import TNPhaseV2
+from services.api import tn_selectors
 from services.api.config import get_tn_credentials
 from services.api.active_count_executor import (
     ACTIVITY_ACTIVE,
@@ -54,12 +55,13 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Selectors — all recon-verified. See docs/selectors/tn_v2_phases.md.
+# Selectors — all recon-verified (last 2026-10-14). See docs/selectors/tn_v2_phases.md.
+# The shared ones come from services/api/tn_selectors.py.
 # ============================================================================
 
 SELECTORS_ATTACH = {
-    "patients_page_search_input":  ["input#ctl00_BodyContent_TextBoxSearchPatientName"],
-    "patients_page_search_submit": ["input#ctl00_BodyContent_ButtonSearch"],
+    "patients_page_search_input":  [tn_selectors.PATIENTS["search_input"]],
+    "patients_page_search_submit": [tn_selectors.PATIENTS["search_submit"]],
     # ROWS ARE LOCATED BY THE RESULT ANCHOR, NEVER BY `tr.Row`.
     #
     # `#PatientSearchTableList tr.Row` matches only the ALTERNATING half of the
@@ -74,14 +76,11 @@ SELECTORS_ATTACH = {
     # (services/api/active_patients_executor.py:13). This route now matches it:
     # every anchor is a row, and the <tr> is reached by walking UP from the
     # anchor rather than by trusting a class that alternates.
-    "patients_page_result_anchor": [
-        "#PatientSearchTableList a[data-testid='patient-search-patient-link']"],
-    "patients_page_name_link":     ["a[data-testid='patient-search-patient-link']"],
+    "patients_page_result_anchor": [tn_selectors.PATIENTS["result_anchor"]],
+    "patients_page_name_link":     [tn_selectors.PATIENTS["name_link"]],
     # Chart, present on first load (no render delay observed):
-    "chart_patient_name": ["div#PatientInformation__PatientName",
-                           "span[data-testid='patientheaderview-patientname-container'] span"],
-    "chart_dob":          ["span#PatientInformation__DOBElem",
-                           "span[data-testid='patientheaderview-dob-container']"],
+    "chart_patient_name": tn_selectors.CHART["patient_name"],
+    "chart_dob":          tn_selectors.CHART["dob"],
     # Phone: BOTH numbers are checked, and a match against either passes.
     # Verified on the chart 2026-09-09 — every phone id present is
     # PatientInformation__{Mobile,Home,Work,Other,Preferred}PhoneElem. When a
@@ -92,14 +91,13 @@ SELECTORS_ATTACH = {
     # Work/Other/Preferred also exist and are deliberately NOT checked: each extra
     # field widens what can satisfy the phone test, and a therapy intake gives a
     # mobile or a home number.
-    "chart_phone_fields": ["div#PatientInformation__MobilePhoneElem",
-                           "div#PatientInformation__HomePhoneElem"],
+    "chart_phone_fields": tn_selectors.CHART["phone_fields"],
     # Chart, one hash-tab click away:
-    "chart_clinicians_tab": ["a[href='#tab=Clinicians']"],
-    "chart_clinicians":     [".clinician-assignments .clinician-assignment a"],
+    "chart_clinicians_tab": [tn_selectors.chart_tab("Clinicians")],
+    "chart_clinicians":     tn_selectors.CHART["clinicians"],
 }
 
-PATIENTS_URL = "https://www.therapynotes.com/app/patients/"
+PATIENTS_URL = tn_selectors.PATIENTS_URL
 
 # A patient record URL names a specific record; the bare form URL does not.
 _RECORD_URL_RE = re.compile(r"/patients/(?:edit|view|detail)/([^/?#]+)")
