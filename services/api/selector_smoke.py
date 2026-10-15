@@ -1,5 +1,5 @@
 """
-Selector smoke: five signals that prove TherapyNotes still has the layout every
+Selector smoke: six signals that prove TherapyNotes still has the layout every
 flow depends on, checked with ONE login a day at 03:00 Mountain.
 
 Why: on 13-14 October a post-login page (an expired password) stopped every
@@ -7,21 +7,23 @@ flow, and staff saw a day of unrelated-looking refusals — dashboard_not_loaded
 navigation_failed, search_ui_not_found, login_failed. One line a day that says
 "TN layout ok" or "TN layout changed: <signal>" turns that into one fact.
 
-THE FIVE SIGNALS, in order (a signal after the first failure is not reached):
+THE SIX SIGNALS, in order (a signal after the first failure is not reached):
   dashboard         login reached the dashboard (tn_selectors.DASHBOARD_MARKERS,
                     no blocking page) — the shared _phase_login, unchanged
-  patients_page     the Patients link was found and the list loaded — the
-                    shared _phase_navigate, unchanged (it also proves the
-                    "+ New Patient" button is there)
+  patients_page     the Patients list opened by URL and loaded — the shared
+                    _phase_navigate (it also proves the "+ New Patient"
+                    button is there)
   search_box        the Patients-page search box is visible
   chart_tab         the practice's test record opens and its Clinicians tab is
                     visible
   new_patient_form  "+ New Patient" opens the form (first-name field visible)
+  scheduling_dialog the Scheduling page (by URL) opens its "+ New" appointment
+                    dialog with the patient search field; closed unsaved
 
 READ-ONLY. It types only the test record's name into the search box. It
-clicks the search button, the test record's own result link and "+ New
-Patient", which opens an empty form that is never filled or saved; the
-browser closes on it. It saves nothing, opens no other chart and never touches
+clicks the search button, the test record's own result link, "+ New
+Patient" (an empty form, never filled or saved), the Scheduling page's
+"+ New" and that dialog's close button (nothing typed, never saved). It saves nothing, opens no other chart and never touches
 the password page beyond reading it.
 
 PHI. Logs and results carry signal names, counts and TherapyNotes' own UI
@@ -31,6 +33,7 @@ leaves it.
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Literal, Optional
@@ -41,14 +44,19 @@ from services.api import tn_selectors as S
 
 logger = logging.getLogger(__name__)
 
-SIGNALS = ("dashboard", "patients_page", "search_box", "chart_tab", "new_patient_form")
+SIGNALS = ("dashboard", "patients_page", "search_box", "chart_tab", "new_patient_form",
+           "scheduling_dialog")
 
-# The practice's test record (also used by the count pass: TEST_ANNA_SEARCH).
-TEST_RECORD_SEARCH = "Test Anna"
-_TEST_RECORD_KEY = "anna test"  # its name's words, sorted, lower-case
+# The test record the chart check opens: the count pass's "Test Anna" (recon
+# 2026-10-14: exactly one exact match). TN_SMOKE_TEST_RECORD overrides it, e.g.
+# "Test LS"; the match is on the name's words, sorted, lower-case.
+TEST_RECORD_SEARCH = os.environ.get("TN_SMOKE_TEST_RECORD", "Test Anna")
+_TEST_RECORD_KEY = " ".join(sorted(TEST_RECORD_SEARCH.lower().split()))
 
 SMOKE_HOUR_MT = 3  # 03:00 America/Denver, daily
 NEW_PATIENT_FIRST_NAME = "#PatientInformationEditor__FirstNameInput"
+NEW_APPOINTMENT_BUTTON = "#ButtonCreateAppointment"
+APPOINTMENT_PATIENT_SEARCH = "input#CalendarEntryEditor__PatientSelect"
 
 _PICK_TEST_RECORD_JS = r"""
 ([sel, key]) => {
@@ -98,7 +106,7 @@ LAST_RESULT: Optional[SelectorSmokeResult] = None
 
 
 async def check_signals(mech, page) -> SelectorSmokeResult:
-    """Run the five checks on a fresh page. `mech` is a TNExecutorV2 on `page`."""
+    """Run the six checks on a fresh page. `mech` is a TNExecutorV2 on `page`."""
     t0 = time.time()
     sig: Dict[str, Optional[bool]] = {}
 
@@ -126,6 +134,10 @@ async def check_signals(mech, page) -> SelectorSmokeResult:
         return done()
 
     sig["new_patient_form"] = await _new_patient_form_opens(page)
+    if not sig["new_patient_form"]:
+        return done()
+
+    sig["scheduling_dialog"] = await _scheduling_dialog_opens(page)
     return done()
 
 
@@ -173,8 +185,27 @@ async def _new_patient_form_opens(page) -> bool:
         return False
 
 
+async def _scheduling_dialog_opens(page) -> bool:
+    """The schedule phase's own path: Scheduling by URL, "+ New", the patient
+    search field. Closed through the dialog's close button; nothing typed."""
+    try:
+        await page.goto(S.SCHEDULING_URL, wait_until="domcontentloaded", timeout=20_000)
+        if not await _visible(page, NEW_APPOINTMENT_BUTTON, 20_000):
+            return False
+        await page.locator(NEW_APPOINTMENT_BUTTON).first.click(timeout=10_000)
+        opened = await _visible(page, APPOINTMENT_PATIENT_SEARCH, 15_000)
+        try:
+            await page.locator("button.DialogCloseButton").filter(visible=True).first.click(timeout=5_000)
+        except Exception:
+            pass
+        return opened
+    except Exception as e:
+        logger.warning(f"[SMOKE] scheduling dialog check failed: {type(e).__name__}")
+        return False
+
+
 async def run_selector_smoke() -> SelectorSmokeResult:
-    """One login, five signals, one log line. Serialised with every TN route."""
+    """One login, six signals, one log line. Serialised with every TN route."""
     global LAST_RESULT
     from services.api.config import get_tn_credentials
     from services.api.mcp_runtime import PlaywrightRuntime

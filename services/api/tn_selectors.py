@@ -8,10 +8,9 @@ its UI, this is the one file to edit. Phase-specific selectors (the New
 Patient form's fields, the upload dialog, the scheduling dialog, the portal
 dialog) stay next to the phase that uses them.
 
-Verified against the live UI by the read-only recon of 2026-10-14
-(docs/selectors/tn_v2_phases.md, "2026-10-14 — navigation refresh and the
-expired password"). Nothing here is guessed; a value that was not observed
-says so.
+Verified against the live UI by the read-only recons of 2026-10-14 and
+2026-10-15 (docs/selectors/tn_v2_phases.md). Nothing here is guessed; a value
+that was not observed says so.
 """
 
 import re
@@ -68,69 +67,48 @@ LOGIN_FORM_INPUTS = ("input#Login__UsernameField", "input#Login__Password")
 # ---------------------------------------------------------------------------
 # Dashboard: what proves "logged in".
 #
-# 2026-10-14: the dashboard lands on /app/ titled "Welcome to TherapyNotes …".
-# Present: links to /app/patients/, /app/todo, /app/scheduling/ and a <nav>.
-# Gone with the navigation refresh: #sidebar, .main-nav and any /app/home link
-# (kept below as fallbacks: a CSS union costs nothing when they are absent).
+# Three links that only an authenticated session has, matched ONLY when
+# VISIBLE (DASHBOARD_SELECTOR is waited on through
+# locator(...).filter(visible=True), never page.wait_for_selector: that checks
+# just the FIRST match in page order, and the refreshed TherapyNotes renders a
+# hidden a[href='/app/patients/'] first — login then "failed" after 30s on a
+# dashboard that had loaded: Oct 13 09:30-09:35Z and the 2026-10-15 04:19Z
+# recon). No generic marker: a bare `nav` matched TherapyNotes' forced
+# password-change page on 14 October. A marker is still necessary, not
+# sufficient: login then checks the blocking pages below
+# (tn_executor_v2._phase_login), and every flow's first navigation waits for
+# its destination's own element.
 #
-# A marker is NECESSARY, not sufficient. TherapyNotes' forced password-change
-# page keeps its menu, so markers were "visible" there on 14 October and the
-# runs failed one phase later as navigation_failed. Login therefore checks the
-# blocking pages below AFTER a marker shows (tn_executor_v2._phase_login).
+# Not observed: a dashboard-only element id. The 2026-10-15 recon was to
+# capture one and stopped at this very bug.
 # ---------------------------------------------------------------------------
 DASHBOARD_MARKERS = [
-    "a[href*='/app/patients' i]",
-    "a[href*='/app/todo' i]",
+    "a[href='/app/patients/']",
     "a[href='/app/scheduling/']",
-    "nav",
-    "#sidebar",
-    ".main-nav",
-    "[data-testid='sidebar']",
-    "a[href*='/app/home' i]",
-    "a[href*='logout' i]",
+    "a[href*='/app/todo' i]",
 ]
 DASHBOARD_SELECTOR = ", ".join(DASHBOARD_MARKERS)
 
 # ---------------------------------------------------------------------------
-# Navigation to the Patients list.
-#
-# A candidate is clicked only if it is VISIBLE and its href IS the Patients
-# list (patients_link_is_list): the dashboard carries links into individual
-# charts (/app/patients/edit/<id>/), and the old catch-all "a[href*='patient']"
-# matched one of those first on 2026-10-14. The text selectors come first:
-# recon saw exactly one visible "Patients" link. The href selector is last:
-# TherapyNotes renders a second, hidden a[href='/app/patients/'], which .first
-# picked on 2026-10-15 (the click timed out).
+# Navigation: NO flow clicks a top-menu link. Every page a flow needs has a
+# direct URL and is opened with page.goto, then confirmed by an element that
+# only that page has (docs/selectors/tn_v2_phases.md, "2026-10-15 — navigation
+# audit"). The menu is not clicked because the refreshed TherapyNotes renders
+# hidden duplicates of its links (2026-10-15 03:56Z: a click on one timed out).
 # ---------------------------------------------------------------------------
+SCHEDULING_URL = "https://www.therapynotes.com/app/scheduling/"
+
 NAV = {
-    "patients_link": [
-        "a:text-is('Patients')",
-        "a:has-text('Patients')",
-        "a[href='/app/patients/']",
-    ],
+    # The Patients list loaded: the same element the nightly pull waits for.
     "patients_page_indicator": [
-        "h1:has-text('Patients')",
+        "select#ctl00_BodyContent_DropDownListSearchAssignment",
         "input#ctl00_BodyContent_TextBoxSearchPatientName",
-        "[data-testid='patients-list']",
-        "table",
     ],
     "new_patient_button": [
         "input#ctl00_BodyContent_ButtonCreatePatient1",
         "input[type='submit'][value='+ New Patient']",
     ],
-    "scheduling_nav": [
-        "a[href='/app/scheduling/']",
-        "a:has-text('Scheduling')",
-    ],
 }
-
-_PATIENTS_LIST_HREF = re.compile(r"^(?:https://www\.therapynotes\.com)?/app/patients/?(?:[?#].*)?$", re.I)
-
-
-def patients_link_is_list(href: Optional[str]) -> bool:
-    """True only for the Patients LIST link, never a link into one chart."""
-    return bool(_PATIENTS_LIST_HREF.match((href or "").strip()))
-
 
 # ---------------------------------------------------------------------------
 # Patients page: filters, search, results, pager. Unchanged by the refresh.
