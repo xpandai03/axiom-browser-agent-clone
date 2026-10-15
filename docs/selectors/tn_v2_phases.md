@@ -782,7 +782,7 @@ not TherapyNotes' wording, so nothing said "password".
 | Key | Before | Now | Why |
 |---|---|---|---|
 | dashboard markers | `nav, #sidebar, .main-nav, [data-testid='sidebar'], /app/home, /app/patients, /app/todo, logout` | adds `a[href='/app/scheduling/']`; the rest kept as fallbacks | `#sidebar`, `.main-nav`, `/app/home` are gone (0 matches); harmless in a CSS union |
-| patients_link | `a:has-text('Patients')`, `a[href*='patient']`, … | `a[href='/app/patients/']`, `a:text-is('Patients')`, `a:has-text('Patients')` — and a candidate is clicked ONLY if its href is the Patients list | `a[href*='patient']` matched 16 elements, the first a link into one patient's chart from the dashboard |
+| patients_link | `a:has-text('Patients')`, `a[href*='patient']`, … | `a:text-is('Patients')`, `a:has-text('Patients')`, `a[href='/app/patients/']` — a candidate is clicked ONLY if it is VISIBLE and its href is the Patients list | `a[href*='patient']` matched 16 elements, the first a link into one patient's chart from the dashboard. 2026-10-15 03:56Z: with the href selector first, `.first` resolved a second, HIDDEN `a[href='/app/patients/']` and the click timed out (contact 900841's run, navigation_failed); text selectors first + visible-only fixes it |
 | patients_page_indicator | `h1:has-text('Patients')`, testid, `table`, `.patient-list` | `h1:has-text('Patients')`, the search box, testid, `table` | `.patient-list` never matched; the search box is the page's own control |
 | everything else | — | unchanged, all verified present | |
 

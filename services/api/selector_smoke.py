@@ -219,7 +219,14 @@ def seconds_until_next_run(now_utc: Optional[datetime] = None, hour: int = SMOKE
 async def daily_smoke_loop() -> None:
     """Started from the app lifespan. Never raises; a failed run waits for tomorrow."""
     while True:
-        wait = seconds_until_next_run()
+        try:
+            wait = seconds_until_next_run()
+        except Exception as e:
+            # 2026-10-15: no time zone data in the image killed this task
+            # silently at startup. Say so, and retry in an hour.
+            logger.error(f"[SMOKE] cannot schedule the daily smoke: {type(e).__name__}: {e}")
+            await asyncio.sleep(3600)
+            continue
         logger.info(f"[SMOKE] next selector smoke in {int(wait // 60)} min (03:00 America/Denver)")
         await asyncio.sleep(wait)
         try:
