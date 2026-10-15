@@ -47,6 +47,13 @@ from shared.schemas.therapy_notes_v2 import (
     TNDocumentResultV2,
 )
 from services.api.config import TNCredentials, get_tn_credentials
+from services.api import tn_selectors
+from services.api.tn_selectors import (
+    DASHBOARD_MARKERS as TN_DASHBOARD_MARKERS,
+    LOGIN as TN_LOGIN,
+    NAV as TN_NAV,
+    chart_tab as tn_chart_tab,
+)
 from shared.phi_redaction import phi_scope_for, redact_mapping, scrub_text
 
 # Shared concurrency lock — V1 and V2 must serialize against the same TN account.
@@ -60,87 +67,18 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# TherapyNotes Selectors (PLACEHOLDERS — must be verified against real DOM)
+# TherapyNotes Selectors
 # ============================================================================
-# Priority order per field: data-testid > id > name > aria-label > text
-# Each key maps to a list of candidate selectors tried in order.
+# Login, dashboard and navigation are shared by every flow and live in ONE
+# place, services/api/tn_selectors.py (recon 2026-10-14). Keys are unchanged so
+# _resolve_selector / _probe_selector callers are untouched.
 
 SELECTORS = {
-    # ------------------------------------------------------------------
-    # PHASE 0: Entry — TN login is at /app/login/ (SPA, JS-rendered)
-    # Step 1: Practice code screen
-    # Step 2: Username/password screen
-    # ------------------------------------------------------------------
-    "practice_code_field": [
-        "input#PracticeCode",                 # Actual TN selector (verified via probe)
-        "input[name='practiceCode']",
-        "input[placeholder*='ractice']",
-        "input[type='text']",
-    ],
-    "practice_code_submit": [
-        "button#Continue__ContinueButton",    # Actual TN selector (verified via probe)
-        "button[type='submit']",
-        "button:has-text('Continue')",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 1: Login (step 2 of the SPA login flow)
-    # ------------------------------------------------------------------
-    "username_field": [
-        "input#Login__UsernameField",      # Actual TN selector (verified via probe-step2)
-        "input[name='username']",
-        "input[type='text']",
-    ],
-    "password_field": [
-        "input#Login__Password",            # Actual TN selector (verified via probe-step2)
-        "input[name='Password']",
-        "input[type='password']",
-    ],
-    "login_submit": [
-        "button#Login__LogInButton",        # Actual TN selector (verified via probe-step2)
-        "button[type='submit']",
-        "button:has-text('Log In')",
-    ],
-    "login_error": [
-        "text=did not match any account",   # Actual TN error (verified via probe)
-        "text=account has been locked",      # TN lockout message (verified via probe)
-        ".validation-summary-errors",
-        ".error-message",
-        "[role='alert']",
-        ".alert-danger",
-        "text=Invalid",
-        "text=incorrect",
-    ],
-    "dashboard_indicator": [
-        "nav",
-        "#sidebar",
-        "[data-testid='sidebar']",
-        "a:has-text('Home')",
-        "a:has-text('Dashboard')",
-        "a:has-text('Calendar')",
-        "a:has-text('Patients')",
-        ".main-nav",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 2: Navigate to New Patient
-    # ------------------------------------------------------------------
-    "patients_link": [
-        "a:has-text('Patients')",
-        "a[href*='patient']",
-        "[data-testid='patients-nav']",
-        "nav a:has-text('Patients')",
-    ],
-    "patients_page_indicator": [
-        "h1:has-text('Patients')",
-        "[data-testid='patients-list']",
-        "table",
-        ".patient-list",
-    ],
-    "new_patient_button": [
-        "input#ctl00_BodyContent_ButtonCreatePatient1",            # Actual TN selector (verified via DOM dump)
-        "input[type='submit'][value='+ New Patient']",             # Fallback by type+value
-    ],
+    **TN_LOGIN,
+    "dashboard_indicator": TN_DASHBOARD_MARKERS,
+    "patients_link": TN_NAV["patients_link"],
+    "patients_page_indicator": TN_NAV["patients_page_indicator"],
+    "new_patient_button": TN_NAV["new_patient_button"],
 }
 
 
@@ -152,7 +90,7 @@ SELECTORS = {
 SELECTORS_V2 = {
     # ---- Documents tab + upload modal ----
     "documents_tab": [
-        "a[href='#tab=Documents']",
+        tn_chart_tab("Documents"),
         "li:has-text('Documents') a",
     ],
     "upload_patient_file_button": [
@@ -185,10 +123,7 @@ SELECTORS_V2 = {
     ],
 
     # ---- Scheduling navigation ----
-    "scheduling_nav": [
-        "a[href='/app/scheduling/']",
-        "a:has-text('Scheduling')",
-    ],
+    "scheduling_nav": TN_NAV["scheduling_nav"],
 
     # ---- New appointment dialog ----
     "new_appointment_button": [
@@ -276,6 +211,31 @@ ZIP_NOT_RECOGNISED_MESSAGE = (
 _TN_DOC_TYPE_LABELS = ("PDF", "JPG", "JPEG", "PNG", "GIF", "TIF", "TIFF", "BMP", "DOC", "DOCX", "IMAGE")
 
 _DOC_SUFFIX = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png"}
+
+# Post-login notices (tn_selectors.NOTICE_CONTAINERS). Finds the first VISIBLE
+# notice and marks its plain close control (whole label or aria-label in
+# NOTICE_CLOSE_LABELS) with data-tn-notice-close. Returns the label and the
+# notice's heading, or the notice's control labels when none is a plain close.
+_NOTICE_SCAN_JS = r"""
+([containerSel, closeLabels]) => {
+  const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const norm = s => (s || '').replace(/’/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+  document.querySelectorAll('[data-tn-notice-close]').forEach(e => e.removeAttribute('data-tn-notice-close'));
+  const notices = [...document.querySelectorAll(containerSel)].filter(vis);
+  if (!notices.length) return { notices: 0 };
+  const n = notices[0];
+  const ctrls = [...n.querySelectorAll("button, a, input[type=button], input[type=submit], [role=button], psy-button")].filter(vis);
+  const labels = ctrls.map(c => norm(c.innerText || c.value || c.getAttribute('aria-label') || c.title));
+  const aria = ctrls.map(c => norm(c.getAttribute('aria-label')));
+  const i = ctrls.findIndex((c, k) => closeLabels.includes(labels[k]) || closeLabels.includes(aria[k]));
+  const h = n.querySelector('h1,h2,h3,h4,[class*=title i],[class*=header i]');
+  const heading = h ? norm(h.innerText).slice(0, 120) : '';
+  if (i < 0) return { notices: notices.length, label: null, heading, controls: labels.slice(0, 6) };
+  ctrls[i].setAttribute('data-tn-notice-close', '1');
+  return { notices: notices.length, label: closeLabels.includes(labels[i]) ? labels[i] : aria[i], heading };
+}
+"""
 
 
 def document_row_matches(cell_text: Optional[str], name: str) -> bool:
@@ -491,6 +451,9 @@ class TNExecutorV2:
         # message rides exactly one progress callback instead of repeating on
         # every subsequent phase.
         self._overlays_reported: set = set()
+        # Days left on the TherapyNotes password when the dashboard carried a
+        # "will expire" notice at login; None when it did not.
+        self.password_expires_in_days: Optional[int] = None
 
     # ========================================================================
     # Public API
@@ -1017,29 +980,40 @@ class TNExecutorV2:
             if os.environ.get("TN_DEBUG_MODE", "false").lower() == "true":
                 await self._capture_screenshot("login_postsubmit")
 
-            # Positive dashboard detection — the ONLY reliable success signal.
-            # TN's login page is a SPA: the URL stays at /app/login/ even
-            # after successful authentication (verified in production logs
-            # where body showed full dashboard but URL was unchanged). So
-            # URL transitions CANNOT be used as a signal. Instead, wait up
-            # to 30s for any marker that only exists on the authenticated
-            # dashboard. CSS-only selectors — no :has-text, no URL checks.
-            dashboard_selector = (
-                "nav, "
-                "#sidebar, "
-                ".main-nav, "
-                "[data-testid='sidebar'], "
-                "a[href*='/app/home' i], "
-                "a[href*='/app/patients' i], "
-                "a[href*='/app/todo' i], "
-                "a[href*='logout' i]"
-            )
+            # Positive dashboard detection. The URL is not a signal: it stayed
+            # at /app/login/ for months and, since 2026-10-14, moves to /app/ —
+            # but the forced password-change page ALSO stays at /app/login/.
+            # Wait up to 30s for any marker that only exists once logged in
+            # (tn_selectors.DASHBOARD_MARKERS; CSS only, no :has-text).
+            marker_seen = False
             try:
                 await self._page.wait_for_selector(
-                    dashboard_selector,
+                    tn_selectors.DASHBOARD_SELECTOR,
                     state="visible",
                     timeout=30_000,
                 )
+                marker_seen = True
+            except Exception:
+                logger.warning("[LOGIN] Dashboard markers not visible within 30s — diagnosing failure")
+
+            if marker_seen:
+                # A marker is necessary, not sufficient. TherapyNotes' forced
+                # password-change page keeps its menu: on 14 October markers were
+                # "visible" there, login passed, and every run failed a phase
+                # later as navigation_failed / search_ui_not_found. Look for the
+                # blocking pages before calling this a dashboard. Polled briefly
+                # because the page body can render a beat after its menu.
+                blocker = None
+                for _ in range(3):
+                    blocker = await self._detect_post_login_interstitial()
+                    if blocker:
+                        break
+                    await asyncio.sleep(0.5)
+                if blocker:
+                    reason, message = blocker
+                    return await self._fail_phase(phase, reason, message, phase_start)
+
+                await self._clear_post_login_notices()
                 logger.info("[LOGIN] Dashboard markers visible — login successful")
                 self._record_log(
                     phase, "success",
@@ -1047,14 +1021,12 @@ class TNExecutorV2:
                     phase_start=phase_start,
                 )
                 return True
-            except Exception:
-                logger.warning("[LOGIN] Dashboard markers not visible within 30s — diagnosing failure")
 
             # Diagnose why we didn't land on the dashboard.
 
             # 1. Login form still visible → credentials rejected
             form_still_visible = False
-            for sel in ("input#Login__UsernameField", "input#Login__Password"):
+            for sel in tn_selectors.LOGIN_FORM_INPUTS:
                 try:
                     loc = self._page.locator(sel).first
                     if await loc.count() > 0 and await loc.is_visible(timeout=500):
@@ -1137,19 +1109,95 @@ class TNExecutorV2:
 
         # Body-text signals: only tight blocker phrases. No MFA text — see docstring.
         try:
-            body_text = (await self._page.inner_text("body", timeout=3000)).lower()
+            raw_body = await self._page.inner_text("body", timeout=3000)
         except Exception:
-            body_text = ""
+            raw_body = ""
+        body_text = raw_body.lower()
 
-        for phrase in ("your password has expired", "password must be changed"):
-            if phrase in body_text:
-                return "login_failed", f"Password change required: '{phrase}'"
+        # TherapyNotes' forced password change (tn_selectors: its own wording,
+        # "…in use for more than 120 days, and has expired", which the old
+        # "your password has expired" phrase never matched). A second password
+        # field that is not the login form's is the page's own shape.
+        expired = tn_selectors.password_expired_text(raw_body)
+        if not expired and "new password" in body_text:
+            try:
+                extra = self._page.locator(
+                    "input[type='password']:not(#Login__Password)").first
+                if await extra.count() > 0 and await extra.is_visible(timeout=500):
+                    expired = "new password form"
+            except Exception:
+                pass
+        if expired:
+            return "password_expired", (
+                f"TherapyNotes password expired ('{expired}'). The account owner must "
+                f"set a new password in TherapyNotes and update the agent's password "
+                f"on Railway; the agent never changes a password."
+            )
 
         for phrase in ("i'm not a robot", "prove you are human"):
             if phrase in body_text:
                 return "login_failed", f"CAPTCHA challenge detected: '{phrase}'"
 
         return None
+
+    async def _clear_post_login_notices(self) -> None:
+        """
+        After a confirmed login: note how long the password has left, then close
+        notices sitting on the dashboard so the first click of ANY flow lands.
+
+        Only Add to Schedule cleared overlays before (at navigate). Survey attach,
+        the pull and the count pass did not, and on 13 October a post-login
+        notice swallowed the attach's Clinicians-tab click: seven
+        Locator.click timeouts in the 03:30 batch. This now runs for every flow.
+
+        Closing is limited to _dismiss_blocking_dialogs (which already refuses
+        consequential labels) and to a notice control whose WHOLE label is a
+        plain close (tn_selectors.NOTICE_CLOSE_LABELS). A notice that offers
+        only other choices is logged and left open. Never raises.
+        """
+        try:
+            body = await self._page.inner_text("body", timeout=3000)
+        except Exception:
+            body = ""
+        days = tn_selectors.password_expires_in_days(body)
+        self.password_expires_in_days = days
+        if days is not None:
+            logger.warning(
+                f"[LOGIN] TherapyNotes password expires in {days} day(s) — "
+                f"set a new one before it stops every flow"
+            )
+        try:
+            await self._dismiss_blocking_dialogs()
+        except Exception:
+            pass
+        for _ in range(3):
+            try:
+                if not await self._close_one_notice():
+                    break
+            except Exception:
+                break
+
+    async def _close_one_notice(self) -> bool:
+        """Close ONE visible notice through a plain close control. True if closed."""
+        found = await self._page.evaluate(
+            _NOTICE_SCAN_JS,
+            [tn_selectors.NOTICE_CONTAINERS, sorted(tn_selectors.NOTICE_CLOSE_LABELS)],
+        )
+        if not found or not found.get("notices"):
+            return False
+        label = found.get("label")
+        if not label or self._label_is_consequential(label):
+            logger.info(
+                f"[LOGIN] Notice left open (no plain close control): "
+                f"'{(found.get('heading') or '')[:80]}' controls={found.get('controls')}"
+            )
+            return False
+        await self._page.locator("[data-tn-notice-close='1']").first.click(timeout=3000)
+        logger.info(
+            f"[LOGIN] Closed notice '{(found.get('heading') or '')[:80]}' via '{label}'"
+        )
+        await asyncio.sleep(0.5)
+        return True
 
     async def _get_body_snippet(self, max_chars: int = 300) -> str:
         """Get a compact body-text snippet for diagnostic error messages."""
@@ -1188,11 +1236,16 @@ class TNExecutorV2:
             # Step 1: Click "Patients" link in the sidebar.
             # Use a Locator (auto-re-resolves on DOM re-render) instead of a
             # cached ElementHandle, which detaches if the SPA repaints mid-click.
+            # Only a link whose href IS the Patients list is clicked. The
+            # dashboard links into individual charts too; the old catch-all
+            # a[href*='patient'] matched one of those on 2026-10-14.
             patients_loc = None
             for sel in SELECTORS["patients_link"]:
                 loc = self._page.locator(sel).first
                 try:
-                    if await loc.count() > 0:
+                    if await loc.count() > 0 and tn_selectors.patients_link_is_list(
+                        await loc.get_attribute("href", timeout=2000)
+                    ):
                         patients_loc = loc
                         break
                 except Exception:

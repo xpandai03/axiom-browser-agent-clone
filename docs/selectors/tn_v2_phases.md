@@ -747,3 +747,101 @@ The appointment-dialog patient search (`_MATCH_ROWS_JS`, `appt_patient_result_ro
 of create-and-schedule. It does not use `tr.Row`, so the halving never reached it, and its
 whole-row subset test is *tolerant* of a parenthesised name rather than broken by it — it
 finds the patient. It is left exactly as it was.
+
+---
+
+# 2026-10-14 — navigation refresh and the expired password
+
+One read-only login (from the agent's own Railway container, 2026-10-15 03:18Z),
+plus the agent's Railway logs from 2026-10-13 00:00 MT. Nothing was saved. The
+only typing was the test record's name in the Patients search box; the New
+Patient form and the scheduling dialog were opened and closed unsaved. No
+patient value is recorded here.
+
+## What happened on 13–14 October
+TherapyNotes announced a navigation refresh, and the same day the agent's
+TherapyNotes password reached its 120-day expiry. The refresh did NOT break a
+selector. The password did break every flow:
+
+| When (UTC) | Page after a correct password | Effect |
+|---|---|---|
+| 10-13 before ~20:00 | dashboard, sometimes under notices: "What's New: A Better Way to Navigate — TherapyNotes® navigation has been refreshed…", "Your Password Will Expire Soon — Your password will expire in less than 1 day on 10/13", the practice's welcome message | some logins timed out (dashboard_not_loaded / login_failed); survey attach's Clinicians-tab click was blocked (7 × `Locator.click: Timeout`); retries booked normally |
+| from 10-13 20:06 | "Settings: Change Your Password — Your password has been in use for more than 120 days, and has expired. Please provide a new password." (URL stays `/app/login/`, title "Log In \| TherapyNotes®") | every flow stopped. The page keeps its menu, so dashboard markers were sometimes "visible": login passed and the run failed one phase later as `navigation_failed` / `search_ui_not_found` |
+
+The old interstitial check looked for "your password has expired", which is
+not TherapyNotes' wording, so nothing said "password".
+
+## Confirmation signals now
+| Signal | Proof (2026-10-14) |
+|---|---|
+| logged in | lands on `/app/`, title "Welcome to TherapyNotes <user> \| TherapyNotes"; visible `a[href*='/app/patients']`, `a[href*='/app/todo']`, `a[href='/app/scheduling/']`, `nav`. THEN no blocking page (password change, MFA, CAPTCHA). |
+| Patients page loaded | `/app/patients/`, title "Patient List \| TherapyNotes", `h1:has-text('Patients')`, the search box, `+ New Patient` |
+| chart loaded | `/app/patients/edit/<id>/`, `div#PatientInformation__PatientName`, the eight hash tabs |
+
+## Selector changes
+| Key | Before | Now | Why |
+|---|---|---|---|
+| dashboard markers | `nav, #sidebar, .main-nav, [data-testid='sidebar'], /app/home, /app/patients, /app/todo, logout` | adds `a[href='/app/scheduling/']`; the rest kept as fallbacks | `#sidebar`, `.main-nav`, `/app/home` are gone (0 matches); harmless in a CSS union |
+| patients_link | `a:has-text('Patients')`, `a[href*='patient']`, … | `a[href='/app/patients/']`, `a:text-is('Patients')`, `a:has-text('Patients')` — and a candidate is clicked ONLY if its href is the Patients list | `a[href*='patient']` matched 16 elements, the first a link into one patient's chart from the dashboard |
+| patients_page_indicator | `h1:has-text('Patients')`, testid, `table`, `.patient-list` | `h1:has-text('Patients')`, the search box, testid, `table` | `.patient-list` never matched; the search box is the page's own control |
+| everything else | — | unchanged, all verified present | |
+
+Verified unchanged (count, visible): practice code + login fields; Patients
+filters `select#ctl00_BodyContent_DropDownListSearchActivity` /
+`…SearchAssignment`; search `input#ctl00_BodyContent_TextBoxSearchPatientName` /
+`input#ctl00_BodyContent_ButtonSearch`; `div#DivPatientsList` (attached before a
+search, visible after); result anchors
+`#PatientSearchTableList a[data-testid='patient-search-patient-link']`;
+`+ New Patient` `input#ctl00_BodyContent_ButtonCreatePatient1`; chart header
+name/DOB/phone ids; tabs `#tab=Patient+Info, To-Do, Schedule, Documents,
+Billing+Settings, Clinicians, Portal, Messages`; Clinicians
+`.clinician-assignments .clinician-assignment a`; Documents "Upload Patient
+File", `tr.Row`/`tr.AlternateRow`; Portal `#PortalDocumentsPage__ShareDocumentsButton`,
+`a[data-testid='dynamictable-document-header']`; New Patient form
+`#PatientInformationEditor__{First,Last}NameInput`, `…DOBInput`, `…EmailInput`,
+`…MobilePhoneInput`, `#AddressEditorView__{Address1,City,PostalCode}Input_PatientAddress`,
+`psy-button.button-save`; Scheduling `a[href='/app/scheduling/']`,
+`#ButtonCreateAppointment`, every `#CalendarEntryEditor__*` field and
+`#CalendarEntryEditor__Create-Button`; dialog closed with `button.DialogCloseButton`.
+
+Menu structure: the refreshed menu's links are not light-DOM children of
+`nav`/`aside`/`#sidebar` (a `querySelectorAll` over those found none) but
+Playwright's CSS and text selectors reach them, as they do inside an open
+shadow root.
+
+Not seen this time: the "What's New" notice (gone by the recon — likely closed
+when the password was changed by hand), so its markup is still unobserved; the
+welcome-email control on the test record's Portal tab (neither "Send" nor
+"Resend" visible after 4s — the portal step already treats that as
+`welcomeEmail=unavailable`).
+
+## Pop-up handling (all flows, at the end of login)
+- Forced password change → stop with `password_expired` ("set a new password in
+  TherapyNotes and update the agent's password on Railway"). Never clicked.
+  Survey attach keeps reporting it as `login_failed` (the CRM's outage code, so
+  no strikes are counted).
+- "Your password will expire in N days" → login continues; a WARNING line and
+  `password_expires_in_days` on the executor.
+- Any other visible notice (`[role=dialog]`, `[aria-modal]`, `.Dialog`, `.modal`,
+  what's-new / announcement / popover / WalkMe / Pendo containers) → the existing
+  `_dismiss_blocking_dialogs` (consequential labels refused), then a control is
+  pressed ONLY if its whole label or aria-label is a plain close (close, ×, got
+  it, dismiss, not now, maybe later, no thanks, skip, ok, done). Otherwise the
+  notice's heading and button labels are logged and it is left open.
+
+All of the shared selectors live in `services/api/tn_selectors.py`.
+
+## Selector smoke (daily, 03:00 America/Denver)
+`services/api/selector_smoke.py`, started from the app lifespan
+(`SELECTOR_SMOKE_DAILY=false` turns it off). One login, read-only, five signals
+in order: dashboard → patients_page → search_box → chart_tab (the test record's
+Clinicians tab) → new_patient_form (opened, never filled or saved). One log line:
+`[SMOKE] TN layout ok (5/5)` or `[SMOKE] TN layout changed: <signal> not found`,
+or "TherapyNotes password expired …", plus "password expires in N day(s)" when
+TherapyNotes says so. It queues on the same lock as every TherapyNotes route.
+`GET /api/tn/selector-smoke` runs it now; `GET /api/tn/selector-smoke/last`
+returns the last result without touching TherapyNotes.
+
+The CRM's Submissions health line reads only the nightly pull's own activity
+row, which the CRM writes; showing the smoke there is a CRM change (read
+`/selector-smoke/last` in the pull runner and add its message to the line).

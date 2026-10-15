@@ -310,6 +310,9 @@ TNFailureReasonV2 = Literal[
     "practice_code_rejected",
     "dashboard_not_loaded",
     "mfa_required",
+    # TherapyNotes' forced password change after login (120-day expiry). The
+    # agent never changes a password; the account owner must.
+    "password_expired",
     "navigation_failed",
     "new_patient_form_not_found",
     # The page and its form were fine — an overlay covered the control the

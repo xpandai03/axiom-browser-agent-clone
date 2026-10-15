@@ -251,10 +251,14 @@ class ActivePatientsExecutor(ActiveCountExecutor):
 
         t0 = time.time()
         if not await self._mech._phase_login():
-            self._record_p(ActivePatientsPhase.LOGIN, "failure", "login failed", t0)
+            # Say WHY: "password_expired" is a different fix from a bad page.
+            pending = getattr(self._mech, "_pending_failure", None) or {}
+            reason = "password_expired" if pending.get("reason") == "password_expired" else "login_failed"
+            self._record_p(ActivePatientsPhase.LOGIN, "failure", f"login failed: {reason}", t0)
             return ActivePatientsOutput.failure(
-                ActivePatientsPhase.LOGIN, "login_failed",
-                "Login failed", self._logs, self._elapsed_ms(),
+                ActivePatientsPhase.LOGIN, reason,
+                "TherapyNotes password expired" if reason == "password_expired" else "Login failed",
+                self._logs, self._elapsed_ms(),
             )
         self._record_p(ActivePatientsPhase.LOGIN, "success", "logged in", t0)
 

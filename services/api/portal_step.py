@@ -31,12 +31,13 @@ import logging
 import time
 from typing import Dict, List, Optional
 
+from .tn_selectors import chart_tab as tn_chart_tab
 from .portal_documents import already_shared, candidates_for, norm, portal_documents_for
 
 logger = logging.getLogger(__name__)
 
 SEL = {
-    "portal_tab": "a[href='#tab=Portal']",
+    "portal_tab": tn_chart_tab("Portal"),
     "welcome_send": "input[value='Send Welcome Email' i], button:text-is('Send Welcome Email')",
     "welcome_resend": "input[value='Resend Welcome Email' i], button:text-is('Resend Welcome Email')",
     "welcome_confirm": "input[value='Email address is correct' i], button:text-is('Email address is correct')",

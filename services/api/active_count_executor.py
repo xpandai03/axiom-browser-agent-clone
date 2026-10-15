@@ -53,6 +53,7 @@ from shared.schemas.active_count import (
     ActiveCountPhaseLog,
     ClinicianActiveCount,
 )
+from services.api import tn_selectors
 from services.api.config import get_tn_credentials
 from services.api.tn_executor import _execution_lock
 from services.api.tn_executor_v2 import TNExecutorV2
@@ -68,14 +69,15 @@ class ReadOnlyViolation(RuntimeError):
 # Selectors — recon-verified 2026-09-13. Nothing here is guessed.
 # ============================================================================
 
-PATIENTS_URL = "https://www.therapynotes.com/app/patients/"
+# Shared with every flow: services/api/tn_selectors.py (re-verified 2026-10-14).
+PATIENTS_URL = tn_selectors.PATIENTS_URL
 
-SEL_ACTIVITY_FILTER = "select#ctl00_BodyContent_DropDownListSearchActivity"
-SEL_CLINICIAN_FILTER = "select#ctl00_BodyContent_DropDownListSearchAssignment"
-SEL_SEARCH_INPUT = "input#ctl00_BodyContent_TextBoxSearchPatientName"
-SEL_SEARCH_SUBMIT = "input#ctl00_BodyContent_ButtonSearch"
-SEL_RESULTS_CONTAINER = "div#DivPatientsList"
-SEL_PAGER_NEXT = "a#DynamicTablePagingLink.Next"
+SEL_ACTIVITY_FILTER = tn_selectors.PATIENTS["activity_filter"]
+SEL_CLINICIAN_FILTER = tn_selectors.PATIENTS["clinician_filter"]
+SEL_SEARCH_INPUT = tn_selectors.PATIENTS["search_input"]
+SEL_SEARCH_SUBMIT = tn_selectors.PATIENTS["search_submit"]
+SEL_RESULTS_CONTAINER = tn_selectors.PATIENTS["results_container"]
+SEL_PAGER_NEXT = tn_selectors.PATIENTS["pager_next"]
 
 SELECTORS_COUNT = {
     "activity_filter": SEL_ACTIVITY_FILTER,

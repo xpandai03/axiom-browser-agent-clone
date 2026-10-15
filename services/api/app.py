@@ -7,6 +7,7 @@ CRITICAL FOR RAILWAY DEPLOYMENT:
 - Health endpoints work even if other modules fail to load
 """
 import logging
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -61,7 +62,17 @@ async def lifespan(app: FastAPI):
     logger.info("MCP integration ready - browser will start on first workflow request")
     logger.info("Healthcheck endpoints: /health, /health/fast, /health/ready")
 
+    # Daily TherapyNotes selector smoke, 03:00 America/Denver (one login).
+    # SELECTOR_SMOKE_DAILY=false turns it off without a deploy of new code.
+    smoke_task = None
+    if os.environ.get("SELECTOR_SMOKE_DAILY", "true").lower() != "false":
+        from .selector_smoke import daily_smoke_loop
+        smoke_task = asyncio.create_task(daily_smoke_loop())
+
     yield
+
+    if smoke_task is not None:
+        smoke_task.cancel()
 
     # Shutdown - lazy import cleanup functions
     logger.info("Shutting down Axiom API...")
@@ -184,6 +195,7 @@ def create_app() -> FastAPI:
         survey_attach_router,
         active_count_router,
         active_patients_router,
+        selector_smoke_router,
         extract_router,
         proxy_sanity_router,
     )
@@ -198,6 +210,7 @@ def create_app() -> FastAPI:
     app.include_router(survey_attach_router, prefix="/api")
     app.include_router(active_count_router, prefix="/api")
     app.include_router(active_patients_router, prefix="/api")
+    app.include_router(selector_smoke_router, prefix="/api")
     app.include_router(extract_router, prefix="/api")
     app.include_router(proxy_sanity_router, prefix="/api")
 

@@ -35,93 +35,24 @@ from shared.schemas.therapy_notes import (
     TNPhaseLog,
     TNFailureReason,
 )
+from services.api import tn_selectors
 from services.api.config import TNCredentials, get_tn_credentials
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# TherapyNotes Selectors (PLACEHOLDERS — must be verified against real DOM)
+# TherapyNotes Selectors — shared with V2 and every other flow:
+# services/api/tn_selectors.py (recon 2026-10-14). Keys unchanged.
 # ============================================================================
-# Priority order per field: data-testid > id > name > aria-label > text
-# Each key maps to a list of candidate selectors tried in order.
 
 SELECTORS = {
-    # ------------------------------------------------------------------
-    # PHASE 0: Entry — TN login is at /app/login/ (SPA, JS-rendered)
-    # Step 1: Practice code screen
-    # Step 2: Username/password screen
-    # ------------------------------------------------------------------
-    "practice_code_field": [
-        "input#PracticeCode",                 # Actual TN selector (verified via probe)
-        "input[name='practiceCode']",
-        "input[placeholder*='ractice']",
-        "input[type='text']",
-    ],
-    "practice_code_submit": [
-        "button#Continue__ContinueButton",    # Actual TN selector (verified via probe)
-        "button[type='submit']",
-        "button:has-text('Continue')",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 1: Login (step 2 of the SPA login flow)
-    # ------------------------------------------------------------------
-    "username_field": [
-        "input#Login__UsernameField",      # Actual TN selector (verified via probe-step2)
-        "input[name='username']",
-        "input[type='text']",
-    ],
-    "password_field": [
-        "input#Login__Password",            # Actual TN selector (verified via probe-step2)
-        "input[name='Password']",
-        "input[type='password']",
-    ],
-    "login_submit": [
-        "button#Login__LogInButton",        # Actual TN selector (verified via probe-step2)
-        "button[type='submit']",
-        "button:has-text('Log In')",
-    ],
-    "login_error": [
-        "text=did not match any account",   # Actual TN error (verified via probe)
-        "text=account has been locked",      # TN lockout message (verified via probe)
-        ".validation-summary-errors",
-        ".error-message",
-        "[role='alert']",
-        ".alert-danger",
-        "text=Invalid",
-        "text=incorrect",
-    ],
-    "dashboard_indicator": [
-        "nav",
-        "#sidebar",
-        "[data-testid='sidebar']",
-        "a:has-text('Home')",
-        "a:has-text('Dashboard')",
-        "a:has-text('Calendar')",
-        "a:has-text('Patients')",
-        ".main-nav",
-    ],
-
-    # ------------------------------------------------------------------
-    # PHASE 2: Navigate to New Patient
-    # ------------------------------------------------------------------
-    "patients_link": [
-        "a:has-text('Patients')",
-        "a[href*='patient']",
-        "[data-testid='patients-nav']",
-        "nav a:has-text('Patients')",
-    ],
-    "patients_page_indicator": [
-        "h1:has-text('Patients')",
-        "[data-testid='patients-list']",
-        "table",
-        ".patient-list",
-    ],
-    "new_patient_button": [
-        "input#ctl00_BodyContent_ButtonCreatePatient1",            # Actual TN selector (verified via DOM dump)
-        "input[type='submit'][value='+ New Patient']",             # Fallback by type+value
-    ],
+    **tn_selectors.LOGIN,
+    "dashboard_indicator": tn_selectors.DASHBOARD_MARKERS,
+    # No catch-all a[href*='patient']: it matched a chart link first (2026-10-14).
+    "patients_link": tn_selectors.NAV["patients_link"],
+    "patients_page_indicator": tn_selectors.NAV["patients_page_indicator"],
+    "new_patient_button": tn_selectors.NAV["new_patient_button"],
 }
 
 
